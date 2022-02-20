@@ -75,12 +75,12 @@ fn sort_with_nulls<T: PartialOrd>(a: &Option<T>, b: &Option<T>) -> Ordering {
 }
 
 /// Default sorting nulls
-fn order_default_null<T: PartialOrd>(a: &Option<T>, b: &Option<T>) -> Ordering {
+pub(crate) fn order_default_null<T: PartialOrd>(a: &Option<T>, b: &Option<T>) -> Ordering {
     sort_with_nulls(a, b)
 }
 
 /// Default sorting nulls
-fn order_reverse_null<T: PartialOrd>(a: &Option<T>, b: &Option<T>) -> Ordering {
+pub(crate) fn order_reverse_null<T: PartialOrd>(a: &Option<T>, b: &Option<T>) -> Ordering {
     sort_with_nulls(b, a)
 }
 
@@ -114,7 +114,7 @@ where
     );
 }
 
-fn argsort_branch<T, Fd, Fr>(
+pub(crate) fn argsort_branch<T, Fd, Fr>(
     slice: &mut [T],
     reverse: bool,
     default_order_fn: Fd,
