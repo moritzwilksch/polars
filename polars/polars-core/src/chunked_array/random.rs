@@ -1,5 +1,5 @@
 use crate::prelude::*;
-use crate::utils::{CustomIterTools, FromTrustedLenIterator, NoNull};
+use crate::utils::{CustomIterTools, NoNull};
 use num::{Float, NumCast};
 use rand::distributions::Bernoulli;
 use rand::prelude::*;
@@ -15,10 +15,9 @@ fn create_rand_index_with_replacement(n: usize, len: usize, seed: u64) -> IdxCa 
 
 fn create_rand_index_no_replacement(n: usize, len: usize, seed: u64) -> IdxCa {
     let mut rng = StdRng::seed_from_u64(seed);
-    let mut idx = Vec::from_iter_trusted_length(0..len as IdxSize);
-    idx.shuffle(&mut rng);
-    idx.truncate(n);
-    IdxCa::new_vec("", idx)
+    let mut buf = vec![0 as IdxSize; n];
+    (0..len as IdxSize).choose_multiple_fill(&mut rng, buf.as_mut_slice());
+    IdxCa::from_vec("", buf)
 }
 
 impl<T> ChunkedArray<T>
