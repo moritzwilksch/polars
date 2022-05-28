@@ -513,6 +513,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
         skip_rows_after_header: int = 0,
         row_count_name: Optional[str] = None,
         row_count_offset: int = 0,
+        sample_size: int = 1024,
     ) -> DF:
         """
         see pl.read_csv
@@ -549,7 +550,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
                 dtypes_dict = {name: dt for (name, dt) in dtype_list}
             if dtype_slice is not None:
                 raise ValueError(
-                    "cannot use glob patterns and unamed dtypes as `dtypes` argument; Use dtypes: Mapping[str, Type[DataType]"
+                    "cannot use glob patterns and unnamed dtypes as `dtypes` argument; Use dtypes: Mapping[str, Type[DataType]"
                 )
             from polars import scan_csv
 
@@ -606,6 +607,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
             parse_dates,
             skip_rows_after_header,
             _prepare_row_count_args(row_count_name, row_count_offset),
+            sample_size=sample_size,
         )
         return self
 
@@ -944,7 +946,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
         json_lines: bool = False,
         *,
         to_string: bool = False,
-    ) -> Optional[str]:
+    ) -> Optional[str]:  # pragma: no cover
         """
         .. deprecated:: 0.13.12
             Please use `write_json`
@@ -1007,7 +1009,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
         Parameters
         ----------
         file
-            Write to this file instead of returning an string.
+            Write to this file instead of returning a string.
         pretty
             Pretty serialize json.
         row_oriented
@@ -1038,7 +1040,8 @@ class DataFrame(metaclass=DataFrameMetaClass):
         self, *args: Any, date_as_object: bool = False, **kwargs: Any
     ) -> "pd.DataFrame":  # noqa: F821
         """
-        Cast to a Pandas DataFrame. This requires that Pandas is installed.
+        Cast to a pandas DataFrame.
+        This requires that pandas and pyarrow are installed.
         This operation clones data.
 
         Parameters
@@ -1066,6 +1069,10 @@ class DataFrame(metaclass=DataFrameMetaClass):
         <class 'pandas.core.frame.DataFrame'>
 
         """
+        if not _PYARROW_AVAILABLE:
+            raise ImportError(  # pragma: no cover
+                "'pyarrow' is required when using to_pandas()."
+            )
         record_batches = self._df.to_pandas()
         tbl = pa.Table.from_batches(record_batches)
         return tbl.to_pandas(*args, date_as_object=date_as_object, **kwargs)
@@ -1124,7 +1131,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
         file: Optional[Union[TextIO, BytesIO, str, Path]] = None,
         has_header: bool = True,
         sep: str = ",",
-    ) -> Optional[str]:
+    ) -> Optional[str]:  # pragma: no cover
         """
         .. deprecated:: 0.13.12
             Please use `write_csv`
@@ -1161,7 +1168,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
         self,
         file: Union[BinaryIO, BytesIO, str, Path],
         compression: Literal["uncompressed", "snappy", "deflate"] = "uncompressed",
-    ) -> None:
+    ) -> None:  # pragma: no cover
         """
         .. deprecated:: 0.13.12
             Please use `write_avro`
@@ -1200,7 +1207,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
         self,
         file: Union[BinaryIO, BytesIO, str, Path],
         compression: Optional[Literal["uncompressed", "lz4", "zstd"]] = "uncompressed",
-    ) -> None:
+    ) -> None:  # pragma: no cover
         """
         .. deprecated:: 0.13.12
             Please use `write_ipc`
@@ -1429,7 +1436,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
         statistics: bool = False,
         use_pyarrow: bool = False,
         **kwargs: Any,
-    ) -> None:
+    ) -> None:  # pragma: no cover
         """
         .. deprecated:: 0.13.12
             Please use `write_parquet`
@@ -1534,7 +1541,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
         # See: https://github.com/jupyter/notebook/issues/2014
         if item.startswith("_"):
             raise AttributeError(item)
-        try:
+        try:  # pragma: no cover
             warnings.warn(
                 "accessing series as Attribute of a DataFrame is deprecated",
                 DeprecationWarning,
@@ -1596,7 +1603,11 @@ class DataFrame(metaclass=DataFrameMetaClass):
         """
         Does quite a lot. Read the comments.
         """
-        if isinstance(item, pli.Expr):
+        if isinstance(item, pli.Expr):  # pragma: no cover
+            warnings.warn(
+                "'using expressions in []' is deprecated. please use 'select'",
+                DeprecationWarning,
+            )
             return self.select(item)
         # select rows and columns at once
         # every 2d selection, i.e. tuple is row column order, just like numpy
@@ -1753,7 +1764,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
 
     def __setitem__(
         self, key: Union[str, List, Tuple[Any, Union[str, int]]], value: Any
-    ) -> None:
+    ) -> None:  # pragma: no cover
         warnings.warn(
             "setting a DataFrame by indexing is deprecated; Consider using DataFrame.with_column",
             DeprecationWarning,
@@ -2299,7 +2310,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
                 .sort(by, reverse, nulls_last)
                 .collect(no_optimization=True, string_cache=False)
             )
-            if in_place:
+            if in_place:  # pragma: no cover
                 warnings.warn(
                     "in-place sorting is deprecated; please use default sorting",
                     DeprecationWarning,
@@ -2307,7 +2318,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
                 self._df = df._df
                 return self
             return df
-        if in_place:
+        if in_place:  # pragma: no cover
             warnings.warn(
                 "in-place sorting is deprecated; please use default sorting",
                 DeprecationWarning,
@@ -2830,7 +2841,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
             This column must be sorted in ascending order. If not the output will not make sense.
 
             In case of a rolling groupby on indices, dtype needs to be one of {Int32, Int64}. Note that
-            Int32 gets temporarely cast to Int64, so if performance matters use an Int64 column.
+            Int32 gets temporarily cast to Int64, so if performance matters use an Int64 column.
         period
             length of the window
         offset
@@ -2942,7 +2953,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
             This column must be sorted in ascending order. If not the output will not make sense.
 
             In case of a dynamic groupby on indices, dtype needs to be one of {Int32, Int64}. Note that
-            Int32 gets temporarely cast to Int64, so if performance matters use an Int64 column.
+            Int32 gets temporarily cast to Int64, so if performance matters use an Int64 column.
         every
             interval of the window
         period
@@ -3482,7 +3493,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
         The keys must be sorted to perform an asof join
 
         """
-        if how == "asof":
+        if how == "asof":  # pragma: no cover
             warnings.warn(
                 "using asof join via DataFrame.join is deprecated, please use DataFrame.join_asof",
                 DeprecationWarning,
@@ -3613,6 +3624,10 @@ class DataFrame(metaclass=DataFrameMetaClass):
         └──────┴─────┘
 
         """
+        if isinstance(column, list):
+            raise ValueError(
+                "`with_column` expects a single expression, not a list. Consider using `with_columns`"
+            )
         if isinstance(column, pli.Expr):
             return self.with_columns([column])
         else:
@@ -4146,9 +4161,43 @@ class DataFrame(metaclass=DataFrameMetaClass):
             self._df.melt(id_vars, value_vars, value_name, variable_name)
         )
 
+    @overload
     def partition_by(
-        self, groups: Union[str, List[str]], maintain_order: bool = True
+        self: DF,
+        groups: Union[str, List[str]],
+        maintain_order: bool,
+        *,
+        as_dict: Literal[False] = ...,
     ) -> List[DF]:
+        ...
+
+    @overload
+    def partition_by(
+        self: DF,
+        groups: Union[str, List[str]],
+        maintain_order: bool,
+        *,
+        as_dict: Literal[True],
+    ) -> Dict[Any, DF]:
+        ...
+
+    @overload
+    def partition_by(
+        self: DF,
+        groups: Union[str, List[str]],
+        maintain_order: bool,
+        *,
+        as_dict: bool,
+    ) -> Union[List[DF], Dict[Any, DF]]:
+        ...
+
+    def partition_by(
+        self: DF,
+        groups: Union[str, List[str]],
+        maintain_order: bool = True,
+        *,
+        as_dict: bool = False,
+    ) -> Union[List[DF], Dict[Any, DF]]:
         """
         Split into multiple DataFrames partitioned by groups.
 
@@ -4158,6 +4207,8 @@ class DataFrame(metaclass=DataFrameMetaClass):
             Groups to partition by
         maintain_order
             Keep predictable output order. This is slower as it requires and extra sort operation.
+        as_dict
+            Return as dictionary
 
         Examples
         --------
@@ -4203,10 +4254,24 @@ class DataFrame(metaclass=DataFrameMetaClass):
         if isinstance(groups, str):
             groups = [groups]
 
-        return [
-            self._from_pydf(_df)  # type: ignore
-            for _df in self._df.partition_by(groups, maintain_order)
-        ]
+        if as_dict:
+            out: Dict[Any, DF] = dict()
+            if len(groups) == 1:
+                for _df in self._df.partition_by(groups, maintain_order):
+                    df = self._from_pydf(_df)
+                    out[df[groups][0, 0]] = df
+            else:
+                for _df in self._df.partition_by(groups, maintain_order):
+                    df = self._from_pydf(_df)
+                    out[df[groups].row(0)] = df
+
+            return out
+
+        else:
+            return [
+                self._from_pydf(_df)
+                for _df in self._df.partition_by(groups, maintain_order)
+            ]
 
     def shift(self: DF, periods: int) -> DF:
         """
@@ -4363,7 +4428,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
         * `.collect()` (run on all data)
         * `.describe_plan()` (print unoptimized query plan)
         * `.describe_optimized_plan()` (print optimized query plan)
-        * `.show_graph()` (show (un)optimized query plan) as graphiz graph)
+        * `.show_graph()` (show (un)optimized query plan) as graphviz graph)
 
         Lazy operations are advised because they allow for query optimization and more parallelization.
         """
@@ -4886,6 +4951,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
         n: Optional[int] = None,
         frac: Optional[float] = None,
         with_replacement: bool = False,
+        shuffle: bool = False,
         seed: Optional[int] = None,
     ) -> DF:
         """
@@ -4899,6 +4965,8 @@ class DataFrame(metaclass=DataFrameMetaClass):
             Fraction between 0.0 and 1.0 .
         with_replacement
             Sample with replacement.
+        shuffle
+            Shuffle the order of sampled data points.
         seed
             Initialization seed. If None is given a random seed is used.
 
@@ -4928,12 +4996,14 @@ class DataFrame(metaclass=DataFrameMetaClass):
             raise ValueError("n and frac were both supplied")
 
         if n is None and frac is not None:
-            return self._from_pydf(self._df.sample_frac(frac, with_replacement, seed))
+            return self._from_pydf(
+                self._df.sample_frac(frac, with_replacement, shuffle, seed)
+            )
 
         if n is None:
             n = 1
 
-        return self._from_pydf(self._df.sample_n(n, with_replacement, seed))
+        return self._from_pydf(self._df.sample_n(n, with_replacement, shuffle, seed))
 
     def fold(
         self, operation: Callable[["pli.Series", "pli.Series"], "pli.Series"]
@@ -4981,7 +5051,7 @@ class DataFrame(metaclass=DataFrameMetaClass):
             3
         ]
 
-        A horizontal string concattenation:
+        A horizontal string concatenation:
 
         >>> df = pl.DataFrame(
         ...     {
@@ -5423,7 +5493,9 @@ class GroupBy(Generic[DF]):
         )
         return self._select(item)
 
-    def _select(self, columns: Union[str, List[str]]) -> "GBSelection[DF]":
+    def _select(
+        self, columns: Union[str, List[str]]
+    ) -> "GBSelection[DF]":  # pragma: no cover
         """
         Select the columns that will be aggregated.
 
@@ -5455,6 +5527,9 @@ class GroupBy(Generic[DF]):
     def get_group(self, group_value: Union[Any, Tuple[Any]]) -> DF:
         """
         Select a single group as a new DataFrame.
+
+        .. deprecated:: 0.13.32
+            Please use `partition_by`
 
         Parameters
         ----------
@@ -5513,7 +5588,7 @@ class GroupBy(Generic[DF]):
         df = self._dataframe_class._from_pydf(self._df)
         return df[groups_idx]
 
-    def groups(self) -> DF:
+    def groups(self) -> DF:  # pragma: no cover
         """
         Return a `DataFrame` with:
 
