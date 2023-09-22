@@ -569,6 +569,12 @@ class StringNameSpace:
 
         Throw errors if encounter invalid JSON strings.
 
+        .. note::
+            Due to a limitation in `simd-json` which is used by polars to parse
+            JSON, this method can only process series that are less than
+            4,294,967,295 bytes (~4GB or ~536,870,911 characters) in *total* size
+            (i.e. across all rows).
+
         Parameters
         ----------
         dtype
