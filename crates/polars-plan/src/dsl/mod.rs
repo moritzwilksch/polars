@@ -474,22 +474,16 @@ impl Expr {
     ///
     /// This has time complexity `O(n + k log(n))`.
     #[cfg(feature = "top_k")]
-    pub fn top_k(self, k: usize) -> Self {
-        self.apply_private(FunctionExpr::TopK {
-            k,
-            descending: false,
-        })
+    pub fn top_k(self, k: Expr) -> Self {
+        self.apply_many_private(FunctionExpr::TopK(false), &[k], false, false)
     }
 
     /// Returns the `k` smallest elements.
     ///
     /// This has time complexity `O(n + k log(n))`.
     #[cfg(feature = "top_k")]
-    pub fn bottom_k(self, k: usize) -> Self {
-        self.apply_private(FunctionExpr::TopK {
-            k,
-            descending: true,
-        })
+    pub fn bottom_k(self, k: Expr) -> Self {
+        self.apply_many_private(FunctionExpr::TopK(true), &[k], false, false)
     }
 
     /// Reverse column
@@ -690,6 +684,7 @@ impl Expr {
         self,
         function_expr: FunctionExpr,
         arguments: &[Expr],
+        auto_explode: bool,
         cast_to_supertypes: bool,
     ) -> Self {
         let mut input = Vec::with_capacity(arguments.len() + 1);
@@ -701,7 +696,7 @@ impl Expr {
             function: function_expr,
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyFlat,
-                auto_explode: true,
+                auto_explode,
                 cast_to_supertypes,
                 ..Default::default()
             },
@@ -838,29 +833,44 @@ impl Expr {
 
     /// Clip underlying values to a set boundary.
     #[cfg(feature = "round_series")]
-    pub fn clip(self, min: AnyValue<'_>, max: AnyValue<'_>) -> Self {
-        self.map_private(FunctionExpr::Clip {
-            min: Some(min.into_static().unwrap()),
-            max: Some(max.into_static().unwrap()),
-        })
+    pub fn clip(self, min: Expr, max: Expr) -> Self {
+        self.map_many_private(
+            FunctionExpr::Clip {
+                has_min: true,
+                has_max: true,
+            },
+            &[min, max],
+            false,
+            false,
+        )
     }
 
     /// Clip underlying values to a set boundary.
     #[cfg(feature = "round_series")]
-    pub fn clip_max(self, max: AnyValue<'_>) -> Self {
-        self.map_private(FunctionExpr::Clip {
-            min: None,
-            max: Some(max.into_static().unwrap()),
-        })
+    pub fn clip_max(self, max: Expr) -> Self {
+        self.map_many_private(
+            FunctionExpr::Clip {
+                has_min: false,
+                has_max: true,
+            },
+            &[max],
+            false,
+            false,
+        )
     }
 
     /// Clip underlying values to a set boundary.
     #[cfg(feature = "round_series")]
-    pub fn clip_min(self, min: AnyValue<'_>) -> Self {
-        self.map_private(FunctionExpr::Clip {
-            min: Some(min.into_static().unwrap()),
-            max: None,
-        })
+    pub fn clip_min(self, min: Expr) -> Self {
+        self.map_many_private(
+            FunctionExpr::Clip {
+                has_min: true,
+                has_max: false,
+            },
+            &[min],
+            false,
+            false,
+        )
     }
 
     /// Convert all values to their absolute/positive value.
@@ -1053,7 +1063,7 @@ impl Expr {
         let arguments = &[other];
         // we don't have to apply on groups, so this is faster
         if has_literal {
-            self.map_many_private(BooleanFunction::IsIn.into(), arguments, true)
+            self.map_many_private(BooleanFunction::IsIn.into(), arguments, true, true)
         } else {
             self.apply_many_private(BooleanFunction::IsIn.into(), arguments, true, true)
         }

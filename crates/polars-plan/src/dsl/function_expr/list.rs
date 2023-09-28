@@ -9,13 +9,23 @@ pub enum ListFunction {
     Concat,
     #[cfg(feature = "is_in")]
     Contains,
+    #[cfg(feature = "list_drop_nulls")]
+    DropNulls,
     Slice,
+    Shift,
     Get,
     #[cfg(feature = "list_take")]
     Take(bool),
     #[cfg(feature = "list_count")]
     CountMatches,
     Sum,
+    Length,
+    Max,
+    Min,
+    Mean,
+    Sort(SortOptions),
+    Reverse,
+    Unique(bool),
     #[cfg(feature = "list_sets")]
     SetOperation(SetOperation),
     #[cfg(feature = "list_any_all")]
@@ -33,34 +43,57 @@ impl Display for ListFunction {
             Concat => "concat",
             #[cfg(feature = "is_in")]
             Contains => "contains",
+            #[cfg(feature = "list_drop_nulls")]
+            DropNulls => "drop_nulls",
             Slice => "slice",
+            Shift => "shift",
             Get => "get",
             #[cfg(feature = "list_take")]
             Take(_) => "take",
             #[cfg(feature = "list_count")]
             CountMatches => "count",
             Sum => "sum",
+            Min => "min",
+            Max => "max",
+            Mean => "mean",
+            Length => "length",
+            Sort(_) => "sort",
+            Reverse => "reverse",
+            Unique(is_stable) => {
+                if *is_stable {
+                    "unique_stable"
+                } else {
+                    "unique"
+                }
+            },
             #[cfg(feature = "list_sets")]
-            SetOperation(s) => return write!(f, "{s}"),
+            SetOperation(s) => return write!(f, "list.{s}"),
             #[cfg(feature = "list_any_all")]
             Any => "any",
             #[cfg(feature = "list_any_all")]
             All => "all",
             Join => "join",
         };
-        write!(f, "{name}")
+        write!(f, "list.{name}")
     }
 }
 
 #[cfg(feature = "is_in")]
 pub(super) fn contains(args: &mut [Series]) -> PolarsResult<Option<Series>> {
     let list = &args[0];
-    let is_in = &args[1];
+    let item = &args[1];
 
-    polars_ops::prelude::is_in(is_in, list).map(|mut ca| {
+    polars_ops::prelude::is_in(item, list).map(|mut ca| {
         ca.rename(list.name());
         Some(ca.into_series())
     })
+}
+
+#[cfg(feature = "list_drop_nulls")]
+pub(super) fn drop_nulls(s: &Series) -> PolarsResult<Series> {
+    let list = s.list()?;
+
+    Ok(list.lst_drop_nulls().into_series())
 }
 
 fn check_slice_arg_shape(slice_len: usize, ca_len: usize, name: &str) -> PolarsResult<()> {
@@ -71,6 +104,13 @@ fn check_slice_arg_shape(slice_len: usize, ca_len: usize, name: &str) -> PolarsR
         name, slice_len, ca_len
     );
     Ok(())
+}
+
+pub(super) fn shift(s: &[Series]) -> PolarsResult<Series> {
+    let list = s[0].list()?;
+    let periods = &s[1];
+
+    list.lst_shift(periods).map(|ok| ok.into_series())
 }
 
 pub(super) fn slice(args: &mut [Series]) -> PolarsResult<Option<Series>> {
@@ -263,6 +303,38 @@ pub(super) fn count_matches(args: &[Series]) -> PolarsResult<Series> {
 
 pub(super) fn sum(s: &Series) -> PolarsResult<Series> {
     Ok(s.list()?.lst_sum())
+}
+
+pub(super) fn length(s: &Series) -> PolarsResult<Series> {
+    Ok(s.list()?.lst_lengths().into_series())
+}
+
+pub(super) fn max(s: &Series) -> PolarsResult<Series> {
+    Ok(s.list()?.lst_max())
+}
+
+pub(super) fn min(s: &Series) -> PolarsResult<Series> {
+    Ok(s.list()?.lst_min())
+}
+
+pub(super) fn mean(s: &Series) -> PolarsResult<Series> {
+    Ok(s.list()?.lst_mean())
+}
+
+pub(super) fn sort(s: &Series, options: SortOptions) -> PolarsResult<Series> {
+    Ok(s.list()?.lst_sort(options).into_series())
+}
+
+pub(super) fn reverse(s: &Series) -> PolarsResult<Series> {
+    Ok(s.list()?.lst_reverse().into_series())
+}
+
+pub(super) fn unique(s: &Series, is_stable: bool) -> PolarsResult<Series> {
+    if is_stable {
+        Ok(s.list()?.lst_unique_stable()?.into_series())
+    } else {
+        Ok(s.list()?.lst_unique()?.into_series())
+    }
 }
 
 #[cfg(feature = "list_sets")]
