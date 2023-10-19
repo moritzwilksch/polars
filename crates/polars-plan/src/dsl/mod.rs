@@ -39,6 +39,7 @@ use std::sync::Arc;
 pub use arity::*;
 #[cfg(feature = "dtype-array")]
 pub use array::*;
+use arrow::legacy::prelude::QuantileInterpolOptions;
 pub use expr::*;
 pub use function_expr::schema::FieldsMapper;
 pub use function_expr::*;
@@ -47,14 +48,13 @@ pub use list::*;
 #[cfg(feature = "meta")]
 pub use meta::*;
 pub use options::*;
-use polars_arrow::prelude::QuantileInterpolOptions;
 use polars_core::prelude::*;
 #[cfg(feature = "diff")]
 use polars_core::series::ops::NullBehavior;
 use polars_core::series::IsSorted;
-use polars_core::utils::{try_get_supertype, NoNull};
+use polars_core::utils::try_get_supertype;
 #[cfg(feature = "rolling_window")]
-use polars_time::series::SeriesOpsTime;
+use polars_time::prelude::SeriesOpsTime;
 pub(crate) use selector::Selector;
 #[cfg(feature = "dtype-struct")]
 pub use struct_::*;
@@ -181,7 +181,7 @@ impl Expr {
 
     /// Drop null values.
     pub fn drop_nulls(self) -> Self {
-        self.apply(|s| Ok(Some(s.drop_nulls())), GetOutput::same_type())
+        self.apply_private(FunctionExpr::DropNulls)
     }
 
     /// Drop NaN values.
@@ -343,11 +343,7 @@ impl Expr {
 
     /// Get the first index of unique values of this expression.
     pub fn arg_unique(self) -> Self {
-        self.apply(
-            |s: Series| s.arg_unique().map(|ca| Some(ca.into_series())),
-            GetOutput::from_type(IDX_DTYPE),
-        )
-        .with_fmt("arg_unique")
+        self.apply_private(FunctionExpr::ArgUnique)
     }
 
     /// Get the index value that has the minimum value.
@@ -651,7 +647,6 @@ impl Expr {
             options: FunctionOptions {
                 collect_groups: ApplyOptions::ApplyGroups,
                 fmt_str: "",
-                auto_explode: true,
                 ..Default::default()
             },
         }
@@ -741,26 +736,31 @@ impl Expr {
     }
 
     /// Cumulatively count values from 0 to len.
+    #[cfg(feature = "cum_agg")]
     pub fn cumcount(self, reverse: bool) -> Self {
         self.apply_private(FunctionExpr::Cumcount { reverse })
     }
 
     /// Get an array with the cumulative sum computed at every element.
+    #[cfg(feature = "cum_agg")]
     pub fn cumsum(self, reverse: bool) -> Self {
         self.apply_private(FunctionExpr::Cumsum { reverse })
     }
 
     /// Get an array with the cumulative product computed at every element.
+    #[cfg(feature = "cum_agg")]
     pub fn cumprod(self, reverse: bool) -> Self {
         self.apply_private(FunctionExpr::Cumprod { reverse })
     }
 
     /// Get an array with the cumulative min computed at every element.
+    #[cfg(feature = "cum_agg")]
     pub fn cummin(self, reverse: bool) -> Self {
         self.apply_private(FunctionExpr::Cummin { reverse })
     }
 
     /// Get an array with the cumulative max computed at every element.
+    #[cfg(feature = "cum_agg")]
     pub fn cummax(self, reverse: bool) -> Self {
         self.apply_private(FunctionExpr::Cummax { reverse })
     }
@@ -791,20 +791,12 @@ impl Expr {
 
     /// Fill missing value with next non-null.
     pub fn backward_fill(self, limit: FillNullLimit) -> Self {
-        self.apply(
-            move |s: Series| s.fill_null(FillNullStrategy::Backward(limit)).map(Some),
-            GetOutput::same_type(),
-        )
-        .with_fmt("backward_fill")
+        self.apply_private(FunctionExpr::BackwardFill { limit })
     }
 
     /// Fill missing value with previous non-null.
     pub fn forward_fill(self, limit: FillNullLimit) -> Self {
-        self.apply(
-            move |s: Series| s.fill_null(FillNullStrategy::Forward(limit)).map(Some),
-            GetOutput::same_type(),
-        )
-        .with_fmt("forward_fill")
+        self.apply_private(FunctionExpr::ForwardFill { limit })
     }
 
     /// Round underlying floating point array to given decimal numbers.
@@ -936,7 +928,7 @@ impl Expr {
     pub fn over_with_options<E: AsRef<[IE]>, IE: Into<Expr> + Clone>(
         self,
         partition_by: E,
-        options: WindowOptions,
+        options: WindowMapping,
     ) -> Self {
         let partition_by = partition_by
             .as_ref()
@@ -946,8 +938,16 @@ impl Expr {
         Expr::Window {
             function: Box::new(self),
             partition_by,
-            order_by: None,
-            options,
+            options: options.into(),
+        }
+    }
+
+    #[cfg(feature = "dynamic_group_by")]
+    pub fn rolling(self, options: RollingGroupOptions) -> Self {
+        Expr::Window {
+            function: Box::new(self),
+            partition_by: vec![],
+            options: WindowType::Rolling(options),
         }
     }
 
@@ -1091,7 +1091,7 @@ impl Expr {
             let by = &s[1];
             let s = &s[0];
             let by = by.cast(&IDX_DTYPE)?;
-            Ok(Some(s.repeat_by(by.idx()?)?.into_series()))
+            Ok(Some(repeat_by(s, by.idx()?)?.into_series()))
         };
 
         self.apply_many(
@@ -1135,11 +1135,7 @@ impl Expr {
     #[cfg(feature = "mode")]
     /// Compute the mode(s) of this column. This is the most occurring value.
     pub fn mode(self) -> Expr {
-        self.apply(
-            |s| s.mode().map(|ca| Some(ca.into_series())),
-            GetOutput::same_type(),
-        )
-        .with_fmt("mode")
+        self.apply_private(FunctionExpr::Mode)
     }
 
     /// Keep the original root name
@@ -1251,7 +1247,11 @@ impl Expr {
                         DataType::Datetime(tu, tz) => {
                             (by.cast(&DataType::Datetime(*tu, None))?, tz)
                         },
-                        _ => (by.clone(), &None),
+                        DataType::Date => (
+                            by.cast(&DataType::Datetime(TimeUnit::Milliseconds, None))?,
+                            &None,
+                        ),
+                        dt => polars_bail!(opq = expr_name, got = dt, expected = "date/datetime"),
                     };
                     ensure_sorted_arg(&by, expr_name)?;
                     let by = by.datetime().unwrap();
@@ -1463,17 +1463,20 @@ impl Expr {
         .with_fmt("rolling_map_float")
     }
 
+    #[cfg(feature = "peaks")]
+    pub fn peak_min(self) -> Expr {
+        self.apply_private(FunctionExpr::PeakMin)
+    }
+
+    #[cfg(feature = "peaks")]
+    pub fn peak_max(self) -> Expr {
+        self.apply_private(FunctionExpr::PeakMax)
+    }
+
     #[cfg(feature = "rank")]
     /// Assign ranks to data, dealing with ties appropriately.
     pub fn rank(self, options: RankOptions, seed: Option<u64>) -> Expr {
-        self.apply(
-            move |s| Ok(Some(s.rank(options, seed))),
-            GetOutput::map_field(move |fld| match options.method {
-                RankMethod::Average => Field::new(fld.name(), DataType::Float64),
-                _ => Field::new(fld.name(), IDX_DTYPE),
-            }),
-        )
-        .with_fmt("rank")
+        self.apply_private(FunctionExpr::Rank { options, seed })
     }
 
     #[cfg(feature = "cutqcut")]
@@ -1552,16 +1555,8 @@ impl Expr {
 
     #[cfg(feature = "pct_change")]
     /// Computes percentage change between values.
-    pub fn pct_change(self, n: i64) -> Expr {
-        use DataType::*;
-        self.apply(
-            move |s| s.pct_change(n).map(Some),
-            GetOutput::map_dtype(|dt| match dt {
-                Float64 | Float32 => dt.clone(),
-                _ => Float64,
-            }),
-        )
-        .with_fmt("pct_change")
+    pub fn pct_change(self, n: Expr) -> Expr {
+        self.apply_many_private(FunctionExpr::PctChange, &[n], false, false)
     }
 
     #[cfg(feature = "moment")]
@@ -1575,19 +1570,11 @@ impl Expr {
     ///
     /// see: [scipy](https://github.com/scipy/scipy/blob/47bb6febaa10658c72962b9615d5d5aa2513fa3a/scipy/stats/stats.py#L1024)
     pub fn skew(self, bias: bool) -> Expr {
-        self.apply(
-            move |s| {
-                s.skew(bias)
-                    .map(|opt_v| Series::new(s.name(), &[opt_v]))
-                    .map(Some)
-            },
-            GetOutput::from_type(DataType::Float64),
-        )
-        .with_function_options(|mut options| {
-            options.fmt_str = "skew";
-            options.auto_explode = true;
-            options
-        })
+        self.apply_private(FunctionExpr::Skew(bias))
+            .with_function_options(|mut options| {
+                options.auto_explode = true;
+                options
+            })
     }
 
     #[cfg(feature = "moment")]
@@ -1599,18 +1586,11 @@ impl Expr {
     /// If bias is False then the kurtosis is calculated using k statistics to
     /// eliminate bias coming from biased moment estimators.
     pub fn kurtosis(self, fisher: bool, bias: bool) -> Expr {
-        self.apply(
-            move |s| {
-                s.kurtosis(fisher, bias)
-                    .map(|opt_v| Some(Series::new(s.name(), &[opt_v])))
-            },
-            GetOutput::from_type(DataType::Float64),
-        )
-        .with_function_options(|mut options| {
-            options.fmt_str = "kurtosis";
-            options.auto_explode = true;
-            options
-        })
+        self.apply_private(FunctionExpr::Kurtosis(fisher, bias))
+            .with_function_options(|mut options| {
+                options.auto_explode = true;
+                options
+            })
     }
 
     /// Get maximal value that could be hold by this dtype.
@@ -1653,43 +1633,19 @@ impl Expr {
     #[cfg(feature = "ewma")]
     /// Calculate the exponentially-weighted moving average.
     pub fn ewm_mean(self, options: EWMOptions) -> Self {
-        use DataType::*;
-        self.apply(
-            move |s| s.ewm_mean(options).map(Some),
-            GetOutput::map_dtype(|dt| match dt {
-                Float64 | Float32 => dt.clone(),
-                _ => Float64,
-            }),
-        )
-        .with_fmt("ewm_mean")
+        self.apply_private(FunctionExpr::EwmMean { options })
     }
 
     #[cfg(feature = "ewma")]
     /// Calculate the exponentially-weighted moving standard deviation.
     pub fn ewm_std(self, options: EWMOptions) -> Self {
-        use DataType::*;
-        self.apply(
-            move |s| s.ewm_std(options).map(Some),
-            GetOutput::map_dtype(|dt| match dt {
-                Float64 | Float32 => dt.clone(),
-                _ => Float64,
-            }),
-        )
-        .with_fmt("ewm_std")
+        self.apply_private(FunctionExpr::EwmStd { options })
     }
 
     #[cfg(feature = "ewma")]
     /// Calculate the exponentially-weighted moving variance.
     pub fn ewm_var(self, options: EWMOptions) -> Self {
-        use DataType::*;
-        self.apply(
-            move |s| s.ewm_var(options).map(Some),
-            GetOutput::map_dtype(|dt| match dt {
-                Float64 | Float32 => dt.clone(),
-                _ => Float64,
-            }),
-        )
-        .with_fmt("ewm_var")
+        self.apply_private(FunctionExpr::EwmVar { options })
     }
 
     /// Returns whether any of the values in the column are `true`.
@@ -1733,23 +1689,11 @@ impl Expr {
     /// Count all unique values and create a struct mapping value to count.
     /// (Note that it is better to turn parallel off in the aggregation context).
     pub fn value_counts(self, sort: bool, parallel: bool) -> Self {
-        self.apply(
-            move |s| {
-                s.value_counts(sort, parallel)
-                    .map(|df| Some(df.into_struct(s.name()).into_series()))
-            },
-            GetOutput::map_field(|fld| {
-                Field::new(
-                    fld.name(),
-                    DataType::Struct(vec![fld.clone(), Field::new("counts", IDX_DTYPE)]),
-                )
-            }),
-        )
-        .with_function_options(|mut opts| {
-            opts.pass_name_to_apply = true;
-            opts
-        })
-        .with_fmt("value_counts")
+        self.apply_private(FunctionExpr::ValueCounts { sort, parallel })
+            .with_function_options(|mut opts| {
+                opts.pass_name_to_apply = true;
+                opts
+            })
     }
 
     #[cfg(feature = "unique_counts")]
@@ -1757,11 +1701,7 @@ impl Expr {
     /// This method differs from [`Expr::value_counts]` in that it does not return the
     /// values, only the counts and might be faster.
     pub fn unique_counts(self) -> Self {
-        self.apply(
-            |s| Ok(Some(s.unique_counts().into_series())),
-            GetOutput::from_type(IDX_DTYPE),
-        )
-        .with_fmt("unique_counts")
+        self.apply_private(FunctionExpr::UniqueCounts)
     }
 
     #[cfg(feature = "log")]

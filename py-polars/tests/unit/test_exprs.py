@@ -380,6 +380,11 @@ def test_rank_so_4109() -> None:
     }
 
 
+def test_rank_string_null_11252() -> None:
+    rank = pl.Series([None, "", "z", None, "a"]).rank()
+    assert rank.to_list() == [None, 1.0, 3.0, None, 2.0]
+
+
 def test_unique_empty() -> None:
     for dt in [pl.Utf8, pl.Boolean, pl.Int32, pl.UInt32]:
         s = pl.Series([], dtype=dt)
@@ -423,10 +428,10 @@ def test_logical_boolean() -> None:
     # note, cannot use expressions in logical
     # boolean context (eg: and/or/not operators)
     with pytest.raises(TypeError, match="ambiguous"):
-        pl.col("colx") and pl.col("coly")
+        pl.col("colx") and pl.col("coly")  # type: ignore[redundant-expr]
 
     with pytest.raises(TypeError, match="ambiguous"):
-        pl.col("colx") or pl.col("coly")
+        pl.col("colx") or pl.col("coly")  # type: ignore[redundant-expr]
 
     df = pl.DataFrame({"a": [1, 2, 3, 4, 5], "b": [1, 2, 3, 4, 5]})
 

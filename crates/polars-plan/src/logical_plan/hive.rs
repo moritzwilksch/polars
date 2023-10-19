@@ -76,7 +76,7 @@ impl HivePartitions {
         } else {
             let schema: Schema = partitions.as_slice().into();
             let stats = BatchStats::new(
-                schema,
+                Arc::new(schema),
                 partitions
                     .into_iter()
                     .map(ColumnStats::from_column_literal)
@@ -85,6 +85,10 @@ impl HivePartitions {
 
             Some(HivePartitions { stats })
         }
+    }
+
+    pub(crate) fn schema(&self) -> &Schema {
+        self.get_statistics().schema()
     }
 
     pub fn materialize_partition_columns(&self) -> Vec<Series> {

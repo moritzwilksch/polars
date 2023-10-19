@@ -243,6 +243,18 @@ def test_equal() -> None:
     assert s3.dt.convert_time_zone("Asia/Tokyo").series_equal(s4) is True
 
 
+@pytest.mark.parametrize(
+    "dtype",
+    [pl.Int64, pl.Float64, pl.Utf8, pl.Boolean],
+)
+def test_eq_missing_list_and_primitive(dtype: PolarsDataType) -> None:
+    s1 = pl.Series([None, None], dtype=dtype)
+    s2 = pl.Series([None, None], dtype=pl.List(dtype))
+
+    expected = pl.Series([True, True])
+    assert_series_equal(s1.eq_missing(s2), expected)
+
+
 def test_to_frame() -> None:
     s1 = pl.Series([1, 2])
     s2 = pl.Series("s", [1, 2])
@@ -602,19 +614,23 @@ def test_to_pandas() -> None:
             pass
 
 
-def test_to_python() -> None:
-    a = pl.Series("a", range(20))
-    b = a.to_list()
-    assert isinstance(b, list)
-    assert len(b) == 20
-
-    b = a.to_list(use_pyarrow=True)
-    assert isinstance(b, list)
-    assert len(b) == 20
+def test_series_to_list() -> None:
+    s = pl.Series("a", range(20))
+    result = s.to_list()
+    assert isinstance(result, list)
+    assert len(result) == 20
 
     a = pl.Series("a", [1, None, 2])
     assert a.null_count() == 1
     assert a.to_list() == [1, None, 2]
+
+
+def test_series_to_list_use_pyarrow_deprecated() -> None:
+    s = pl.Series("a", range(20))
+    with pytest.deprecated_call():
+        result = s.to_list(use_pyarrow=True)
+    assert isinstance(result, list)
+    assert len(result) == 20
 
 
 def test_to_struct() -> None:
@@ -723,7 +739,7 @@ def test_view() -> None:
         b.view()
 
     assert np.all(b[:2].view() == np.array([1, 2]))
-    assert b[:2].has_validity()
+    assert not b[:2].has_validity()
 
 
 def test_ufunc() -> None:
@@ -1188,29 +1204,6 @@ def test_describe() -> None:
         assert empty_s.describe()
 
 
-def test_slice() -> None:
-    s = pl.Series(name="a", values=[0, 1, 2, 3, 4, 5], dtype=pl.UInt8)
-    for srs_slice, expected in (
-        [s.slice(2, 3), [2, 3, 4]],
-        [s.slice(4, 1), [4]],
-        [s.slice(4, None), [4, 5]],
-        [s.slice(3), [3, 4, 5]],
-        [s.slice(-2), [4, 5]],
-    ):
-        assert srs_slice.to_list() == expected  # type: ignore[attr-defined]
-
-    for py_slice in (
-        slice(1, 2),
-        slice(0, 2, 2),
-        slice(3, -3, -1),
-        slice(1, None, -2),
-        slice(-1, -3, -1),
-        slice(-3, None, -3),
-    ):
-        # confirm series slice matches python slice
-        assert s[py_slice].to_list() == s.to_list()[py_slice]
-
-
 def test_round() -> None:
     a = pl.Series("f", [1.003, 2.003])
     b = a.round(2)
@@ -1286,6 +1279,7 @@ def test_pct_change() -> None:
     s = pl.Series("a", [1, 2, 4, 8, 16, 32, 64])
     expected = pl.Series("a", [None, None, float("inf"), 3.0, 3.0, 3.0, 3.0])
     assert_series_equal(s.pct_change(2), expected)
+    assert_series_equal(s.pct_change(pl.Series([2])), expected)
     # negative
     assert pl.Series(range(5)).pct_change(-1).to_list() == [
         -1.0,
@@ -1319,10 +1313,10 @@ def test_kurtosis() -> None:
 
 def test_arr_lengths() -> None:
     s = pl.Series("a", [[1, 2], [1, 2, 3]])
-    assert_series_equal(s.list.lengths(), pl.Series("a", [2, 3], dtype=UInt32))
+    assert_series_equal(s.list.len(), pl.Series("a", [2, 3], dtype=UInt32))
     df = pl.DataFrame([s])
     assert_series_equal(
-        df.select(pl.col("a").list.lengths())["a"], pl.Series("a", [2, 3], dtype=UInt32)
+        df.select(pl.col("a").list.len())["a"], pl.Series("a", [2, 3], dtype=UInt32)
     )
 
 
@@ -1456,10 +1450,10 @@ def test_bitwise() -> None:
 
     # ensure mistaken use of logical 'and'/'or' raises an exception
     with pytest.raises(TypeError, match="ambiguous"):
-        a and b
+        a and b  # type: ignore[redundant-expr]
 
     with pytest.raises(TypeError, match="ambiguous"):
-        a or b
+        a or b  # type: ignore[redundant-expr]
 
 
 def test_to_numpy(monkeypatch: Any) -> None:
@@ -1863,11 +1857,11 @@ def test_dot() -> None:
 def test_peak_max_peak_min() -> None:
     s = pl.Series("a", [4, 1, 3, 2, 5])
     result = s.peak_min()
-    expected = pl.Series([False, True, False, True, False])
+    expected = pl.Series("a", [False, True, False, True, False])
     assert_series_equal(result, expected)
 
     result = s.peak_max()
-    expected = pl.Series([True, False, True, False, True])
+    expected = pl.Series("a", [True, False, True, False, True])
     assert_series_equal(result, expected)
 
 
@@ -2050,6 +2044,14 @@ def test_trigonometric(f: str) -> None:
     assert_series_equal(result, expected)
 
 
+@pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+def test_trigonometric_cot() -> None:
+    # cotangent is not available in numpy...
+    s = pl.Series("a", [0.0, math.pi, None, math.nan])
+    expected = pl.Series("a", [math.inf, -8.1656e15, None, math.nan])
+    assert_series_equal(s.cot(), expected)
+
+
 def test_trigonometric_invalid_input() -> None:
     # String
     s = pl.Series("a", ["1", "2", "3"])
@@ -2146,7 +2148,9 @@ def test_ewm_mean() -> None:
 def test_ewm_mean_leading_nulls() -> None:
     for min_periods in [1, 2, 3]:
         assert (
-            pl.Series([1, 2, 3, 4]).ewm_mean(3, min_periods=min_periods).null_count()
+            pl.Series([1, 2, 3, 4])
+            .ewm_mean(com=3, min_periods=min_periods)
+            .null_count()
             == min_periods - 1
         )
     assert pl.Series([None, 1.0, 1.0, 1.0]).ewm_mean(
@@ -2216,17 +2220,17 @@ def test_ewm_param_validation() -> None:
     with pytest.raises(ValueError, match="mutually exclusive"):
         s.ewm_var(alpha=0.5, span=1.5)
 
-    with pytest.raises(ValueError, match="require 'com' >= 0"):
+    with pytest.raises(ValueError, match="require `com` >= 0"):
         s.ewm_std(com=-0.5)
 
-    with pytest.raises(ValueError, match="require 'span' >= 1"):
+    with pytest.raises(ValueError, match="require `span` >= 1"):
         s.ewm_mean(span=0.5)
 
-    with pytest.raises(ValueError, match="require 'half_life' > 0"):
+    with pytest.raises(ValueError, match="require `half_life` > 0"):
         s.ewm_var(half_life=0)
 
     for alpha in (-0.5, -0.0000001, 0.0, 1.0000001, 1.5):
-        with pytest.raises(ValueError, match="require 0 < 'alpha' <= 1"):
+        with pytest.raises(ValueError, match="require 0 < `alpha` <= 1"):
             s.ewm_std(alpha=alpha)
 
 

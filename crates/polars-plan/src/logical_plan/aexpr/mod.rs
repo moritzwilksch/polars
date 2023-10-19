@@ -4,7 +4,7 @@ mod schema;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use polars_arrow::prelude::QuantileInterpolOptions;
+use arrow::legacy::prelude::QuantileInterpolOptions;
 use polars_core::frame::group_by::GroupByMethod;
 use polars_core::prelude::*;
 use polars_core::utils::{get_time_units, try_get_supertype};
@@ -178,8 +178,7 @@ pub enum AExpr {
     Window {
         function: Node,
         partition_by: Vec<Node>,
-        order_by: Option<Node>,
-        options: WindowOptions,
+        options: WindowType,
     },
     #[default]
     Wildcard,
@@ -314,13 +313,9 @@ impl AExpr {
             Window {
                 function,
                 partition_by,
-                order_by,
                 options: _,
             } => {
                 for e in partition_by.iter().rev() {
-                    container.push(*e);
-                }
-                if let Some(e) = order_by {
                     container.push(*e);
                 }
                 // latest so that it is popped first
@@ -345,7 +340,7 @@ impl AExpr {
             Column(_) | Literal(_) | Wildcard | Count | Nth(_) => return self,
             Alias(input, _) => input,
             Cast { expr, .. } => expr,
-            Explode(input) | Slice { input, .. } => input,
+            Explode(input) => input,
             BinaryExpr { left, right, .. } => {
                 *right = inputs[0];
                 *left = inputs[1];
@@ -395,17 +390,25 @@ impl AExpr {
                 input.extend(inputs.iter().rev().copied());
                 return self;
             },
+            Slice {
+                input,
+                offset,
+                length,
+            } => {
+                *length = inputs[0];
+                *offset = inputs[1];
+                *input = inputs[2];
+                return self;
+            },
             Window {
                 function,
                 partition_by,
-                order_by,
                 ..
             } => {
                 *function = *inputs.last().unwrap();
                 partition_by.clear();
                 partition_by.extend_from_slice(&inputs[..inputs.len() - 1]);
 
-                assert!(order_by.is_none());
                 return self;
             },
         };

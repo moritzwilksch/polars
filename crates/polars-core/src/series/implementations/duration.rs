@@ -44,22 +44,6 @@ impl private::PrivateSeries for SeriesWrap<DurationChunked> {
             .into_series()
     }
 
-    #[cfg(feature = "cum_agg")]
-    fn _cummax(&self, reverse: bool) -> Series {
-        self.0
-            .cummax(reverse)
-            .into_duration(self.0.time_unit())
-            .into_series()
-    }
-
-    #[cfg(feature = "cum_agg")]
-    fn _cummin(&self, reverse: bool) -> Series {
-        self.0
-            .cummin(reverse)
-            .into_duration(self.0.time_unit())
-            .into_series()
-    }
-
     fn _set_flags(&mut self, flags: Settings) {
         self.0.deref_mut().set_flags(flags)
     }
@@ -445,32 +429,5 @@ impl SeriesTrait for SeriesWrap<DurationChunked> {
 
     fn clone_inner(&self) -> Arc<dyn SeriesTrait> {
         Arc::new(SeriesWrap(Clone::clone(&self.0)))
-    }
-
-    fn peak_max(&self) -> BooleanChunked {
-        self.0.peak_max()
-    }
-
-    fn peak_min(&self) -> BooleanChunked {
-        self.0.peak_min()
-    }
-    #[cfg(feature = "repeat_by")]
-    fn repeat_by(&self, by: &IdxCa) -> PolarsResult<ListChunked> {
-        Ok(self
-            .0
-            .repeat_by(by)?
-            .cast(&DataType::List(Box::new(DataType::Duration(
-                self.0.time_unit(),
-            ))))
-            .unwrap()
-            .list()
-            .unwrap()
-            .clone())
-    }
-    #[cfg(feature = "mode")]
-    fn mode(&self) -> PolarsResult<Series> {
-        self.0
-            .mode()
-            .map(|ca| ca.into_duration(self.0.time_unit()).into_series())
     }
 }

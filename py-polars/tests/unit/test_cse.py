@@ -481,3 +481,58 @@ def test_no_cse_in_with_context() -> None:
         ],
         "label": [0, 1, 1],
     }
+
+
+def test_cse_slice_11594() -> None:
+    df = pl.LazyFrame({"a": [1, 2, 1, 2, 1, 2]})
+
+    q = df.select(
+        pl.col("a").slice(offset=1, length=pl.count() - 1).alias("1"),
+        pl.col("a").slice(offset=1, length=pl.count() - 1).alias("2"),
+    )
+
+    assert "__POLARS_CSE" in q.explain(comm_subexpr_elim=True)
+
+    assert q.collect(comm_subexpr_elim=True).to_dict(False) == {
+        "1": [2, 1, 2, 1, 2],
+        "2": [2, 1, 2, 1, 2],
+    }
+
+    q = df.select(
+        pl.col("a").slice(offset=1, length=pl.count() - 1).alias("1"),
+        pl.col("a").slice(offset=0, length=pl.count() - 1).alias("2"),
+    )
+
+    assert "__POLARS_CSE" in q.explain(comm_subexpr_elim=True)
+
+    assert q.collect(comm_subexpr_elim=True).to_dict(False) == {
+        "1": [2, 1, 2, 1, 2],
+        "2": [1, 2, 1, 2, 1],
+    }
+
+
+def test_cse_is_in_11489() -> None:
+    df = pl.DataFrame(
+        {"cond": [1, 2, 3, 2, 1], "x": [1.0, 0.20, 3.0, 4.0, 0.50]}
+    ).lazy()
+    any_cond = (
+        pl.when(pl.col("cond").is_in([2, 3]))
+        .then(True)
+        .when(pl.col("cond").is_in([1]))
+        .then(False)
+        .otherwise(None)
+        .alias("any_cond")
+    )
+    val = (
+        pl.when(any_cond)
+        .then(1.0)
+        .when(~any_cond)
+        .then(0.0)
+        .otherwise(None)
+        .alias("val")
+    )
+    assert df.select("cond", any_cond, val).collect().to_dict(False) == {
+        "cond": [1, 2, 3, 2, 1],
+        "any_cond": [False, True, True, True, False],
+        "val": [0.0, 1.0, 1.0, 1.0, 0.0],
+    }

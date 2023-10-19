@@ -293,9 +293,20 @@ impl PyExpr {
         self.inner.clone().bottom_k(k.inner).into()
     }
 
+    #[cfg(feature = "peaks")]
+    fn peak_min(&self) -> Self {
+        self.clone().inner.peak_min().into()
+    }
+
+    #[cfg(feature = "peaks")]
+    fn peak_max(&self) -> Self {
+        self.clone().inner.peak_max().into()
+    }
+
     fn arg_max(&self) -> Self {
         self.clone().inner.arg_max().into()
     }
+
     fn arg_min(&self) -> Self {
         self.clone().inner.arg_min().into()
     }
@@ -479,6 +490,11 @@ impl PyExpr {
     }
 
     #[cfg(feature = "trigonometry")]
+    fn cot(&self) -> Self {
+        self.clone().inner.cot().into()
+    }
+
+    #[cfg(feature = "trigonometry")]
     fn arcsin(&self) -> Self {
         self.clone().inner.arcsin().into()
     }
@@ -552,10 +568,29 @@ impl PyExpr {
             .into_iter()
             .map(|e| e.inner)
             .collect::<Vec<Expr>>();
-        self.clone()
-            .inner
-            .over_with_options(partition_by, WindowOptions { mapping: mapping.0 })
+        self.inner
+            .clone()
+            .over_with_options(partition_by, mapping.0)
             .into()
+    }
+
+    fn rolling(
+        &self,
+        index_column: &str,
+        period: &str,
+        offset: &str,
+        closed: Wrap<ClosedWindow>,
+        check_sorted: bool,
+    ) -> Self {
+        let options = RollingGroupOptions {
+            index_column: index_column.into(),
+            period: Duration::parse(period),
+            offset: Duration::parse(offset),
+            closed_window: closed.0,
+            check_sorted,
+        };
+
+        self.inner.clone().rolling(options).into()
     }
 
     fn _and(&self, expr: Self) -> Self {
@@ -706,8 +741,8 @@ impl PyExpr {
     }
 
     #[cfg(feature = "pct_change")]
-    fn pct_change(&self, n: i64) -> Self {
-        self.inner.clone().pct_change(n).into()
+    fn pct_change(&self, n: Self) -> Self {
+        self.inner.clone().pct_change(n.inner).into()
     }
 
     fn skew(&self, bias: bool) -> Self {
@@ -852,17 +887,17 @@ impl PyExpr {
     }
 
     #[cfg(feature = "ffi_plugin")]
-    #[allow(clippy::too_many_arguments)]
     fn register_plugin(
         &self,
         lib: &str,
         symbol: &str,
         args: Vec<PyExpr>,
+        kwargs: Vec<u8>,
         is_elementwise: bool,
         input_wildcard_expansion: bool,
         auto_explode: bool,
         cast_to_supertypes: bool,
-    ) -> Self {
+    ) -> PyResult<Self> {
         use polars_plan::prelude::*;
         let inner = self.inner.clone();
 
@@ -877,11 +912,12 @@ impl PyExpr {
             input.push(a.inner)
         }
 
-        Expr::Function {
+        Ok(Expr::Function {
             input,
             function: FunctionExpr::FfiPlugin {
                 lib: Arc::from(lib),
                 symbol: Arc::from(symbol),
+                kwargs: Arc::from(kwargs),
             },
             options: FunctionOptions {
                 collect_groups,
@@ -891,6 +927,6 @@ impl PyExpr {
                 ..Default::default()
             },
         }
-        .into()
+        .into())
     }
 }

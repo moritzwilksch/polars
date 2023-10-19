@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
+import pyarrow.parquet as pq
 import pytest
 
 import polars as pl
@@ -88,11 +89,11 @@ def test_to_from_buffer(
 def test_to_from_buffer_lzo(df: pl.DataFrame) -> None:
     buf = io.BytesIO()
     # Writing lzo compressed parquet files is not supported for now.
-    with pytest.raises(pl.ArrowError):
+    with pytest.raises(pl.ComputeError):
         df.write_parquet(buf, compression="lzo", use_pyarrow=False)
     buf.seek(0)
     # Invalid parquet file as writing failed.
-    with pytest.raises(pl.ArrowError):
+    with pytest.raises(pl.ComputeError):
         _ = pl.read_parquet(buf)
 
     buf = io.BytesIO()
@@ -101,7 +102,7 @@ def test_to_from_buffer_lzo(df: pl.DataFrame) -> None:
         df.write_parquet(buf, compression="lzo", use_pyarrow=True)
     buf.seek(0)
     # Invalid parquet file as writing failed.
-    with pytest.raises(pl.ArrowError):
+    with pytest.raises(pl.ComputeError):
         _ = pl.read_parquet(buf)
 
 
@@ -125,10 +126,10 @@ def test_to_from_file_lzo(df: pl.DataFrame, tmp_path: Path) -> None:
     file_path = tmp_path / "small.avro"
 
     # Writing lzo compressed parquet files is not supported for now.
-    with pytest.raises(pl.ArrowError):
+    with pytest.raises(pl.ComputeError):
         df.write_parquet(file_path, compression="lzo", use_pyarrow=False)
     # Invalid parquet file as writing failed.
-    with pytest.raises(pl.ArrowError):
+    with pytest.raises(pl.ComputeError):
         _ = pl.read_parquet(file_path)
 
     # Writing lzo compressed parquet files is not supported for now.
@@ -494,3 +495,18 @@ def test_tz_aware_parquet_9586(io_files_path: Path) -> None:
         {"UTC_DATETIME_ID": [datetime(2023, 6, 26, 14, 15, 0, tzinfo=timezone.utc)]}
     ).select(pl.col("*").cast(pl.Datetime("ns", "UTC")))
     assert_frame_equal(result, expected)
+
+
+def test_nested_list_page_reads_to_end_11548() -> None:
+    df = pl.select(
+        pl.repeat(pl.arange(0, 2048, dtype=pl.UInt64).implode(), 2).alias("x"),
+    )
+
+    f = io.BytesIO()
+
+    pq.write_table(df.to_arrow(), f, data_page_size=1)
+
+    f.seek(0)
+
+    result = pl.read_parquet(f).select(pl.col("x").list.len())
+    assert result.to_series().to_list() == [2048, 2048]

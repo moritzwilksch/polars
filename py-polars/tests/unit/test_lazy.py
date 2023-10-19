@@ -114,31 +114,6 @@ def test_take_every() -> None:
     assert_frame_equal(expected_df, ldf.take_every(2).collect())
 
 
-def test_slice() -> None:
-    ldf = pl.LazyFrame({"a": [1, 2, 3, 4], "b": ["a", "b", "c", "d"]})
-    expected = pl.LazyFrame({"a": [3, 4], "b": ["c", "d"]})
-    for slice_params in (
-        [2, 10],  # slice > len(df)
-        [2, 4],  # slice == len(df)
-        [2],  # optional len
-    ):
-        assert_frame_equal(ldf.slice(*slice_params), expected)
-
-    for py_slice in (
-        slice(1, 2),
-        slice(0, 3, 2),
-        slice(-3, None),
-        slice(None, 2, 2),
-        slice(3, None, -1),
-        slice(1, None, -2),
-    ):
-        # confirm frame slice matches python slice
-        assert ldf[py_slice].collect().rows() == ldf.collect().rows()[py_slice]
-
-    assert_frame_equal(ldf[::-1], ldf.reverse())
-    assert_frame_equal(ldf[::-2], ldf.reverse().take_every(2))
-
-
 def test_agg() -> None:
     df = pl.DataFrame({"a": [1, 2, 3], "b": [1.0, 2.0, 3.0]})
     ldf = df.lazy().min()
@@ -184,6 +159,53 @@ def test_filter_str() -> None:
     # last row based on a filter
     result = ldf.filter("bools").select(pl.last("*")).collect()
     assert_frame_equal(result, expected)
+
+
+def test_filter_multiple_predicates() -> None:
+    ldf = pl.LazyFrame(
+        {
+            "a": [1, 1, 1, 2, 2],
+            "b": [1, 1, 2, 2, 2],
+            "c": [1, 1, 2, 3, 4],
+        }
+    )
+
+    # using multiple predicates
+    # multiple predicates
+    expected = pl.DataFrame({"a": [1, 1, 1], "b": [1, 1, 2], "c": [1, 1, 2]})
+    for out in (
+        ldf.filter(pl.col("a") == 1, pl.col("b") <= 2),  # positional/splat
+        ldf.filter([pl.col("a") == 1, pl.col("b") <= 2]),  # as list
+    ):
+        assert_frame_equal(out.collect(), expected)
+
+    # multiple kwargs
+    assert_frame_equal(
+        ldf.filter(a=1, b=2).collect(),
+        pl.DataFrame({"a": [1], "b": [2], "c": [2]}),
+    )
+
+    # both positional and keyword args
+    assert_frame_equal(
+        ldf.filter(pl.col("c") < 4, a=2, b=2).collect(),
+        pl.DataFrame({"a": [2], "b": [2], "c": [3]}),
+    )
+
+    # check 'predicate' keyword deprecation:
+    # note: can disambiguate new/old usage - only expect warning on old-style usage
+    with pytest.warns(
+        DeprecationWarning,
+        match="`filter` no longer takes a 'predicate' parameter",
+    ):
+        ldf.filter(predicate=pl.col("a").ge(1)).collect()
+
+    ldf = pl.LazyFrame(
+        {
+            "description": ["eq", "gt", "ge"],
+            "predicate": ["==", ">", ">="],
+        },
+    )
+    assert ldf.filter(predicate="==").select("description").collect().item() == "eq"
 
 
 def test_apply_custom_function() -> None:

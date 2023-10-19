@@ -13,7 +13,8 @@ use crate::prelude::*;
 #[cfg(feature = "csv")]
 pub struct LazyCsvReader<'a> {
     path: PathBuf,
-    delimiter: u8,
+    paths: Vec<PathBuf>,
+    separator: u8,
     has_header: bool,
     ignore_errors: bool,
     skip_rows: usize,
@@ -39,10 +40,15 @@ pub struct LazyCsvReader<'a> {
 
 #[cfg(feature = "csv")]
 impl<'a> LazyCsvReader<'a> {
+    pub fn new_paths(paths: Vec<PathBuf>) -> Self {
+        Self::new("").with_paths(paths)
+    }
+
     pub fn new(path: impl AsRef<Path>) -> Self {
         LazyCsvReader {
             path: path.as_ref().to_owned(),
-            delimiter: b',',
+            paths: vec![],
+            separator: b',',
             has_header: true,
             ignore_errors: false,
             skip_rows: 0,
@@ -134,10 +140,10 @@ impl<'a> LazyCsvReader<'a> {
         self
     }
 
-    /// Set the CSV file's column delimiter as a byte character
+    /// Set the CSV file's column separator as a byte character
     #[must_use]
-    pub fn with_delimiter(mut self, delimiter: u8) -> Self {
-        self.delimiter = delimiter;
+    pub fn with_separator(mut self, separator: u8) -> Self {
+        self.separator = separator;
         self
     }
 
@@ -225,12 +231,12 @@ impl<'a> LazyCsvReader<'a> {
     where
         F: Fn(Schema) -> PolarsResult<Schema>,
     {
-        let mut file = if let Some(mut paths) = self.glob()? {
+        let mut file = if let Some(mut paths) = self.iter_paths()? {
             let path = match paths.next() {
                 Some(globresult) => globresult?,
                 None => polars_bail!(ComputeError: "globbing pattern did not match any files"),
             };
-            polars_utils::open_file(&path)
+            polars_utils::open_file(path)
         } else {
             polars_utils::open_file(&self.path)
         }?;
@@ -239,7 +245,7 @@ impl<'a> LazyCsvReader<'a> {
 
         let (schema, _, _) = infer_file_schema(
             &reader_bytes,
-            self.delimiter,
+            self.separator,
             self.infer_schema_length,
             self.has_header,
             // we set it to None and modify them after the schema is updated
@@ -270,7 +276,7 @@ impl LazyFileListReader for LazyCsvReader<'_> {
     fn finish_no_glob(self) -> PolarsResult<LazyFrame> {
         let mut lf: LazyFrame = LogicalPlanBuilder::scan_csv(
             self.path,
-            self.delimiter,
+            self.separator,
             self.has_header,
             self.ignore_errors,
             self.skip_rows,
@@ -302,8 +308,17 @@ impl LazyFileListReader for LazyCsvReader<'_> {
         &self.path
     }
 
+    fn paths(&self) -> &[PathBuf] {
+        &self.paths
+    }
+
     fn with_path(mut self, path: PathBuf) -> Self {
         self.path = path;
+        self
+    }
+
+    fn with_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.paths = paths;
         self
     }
 

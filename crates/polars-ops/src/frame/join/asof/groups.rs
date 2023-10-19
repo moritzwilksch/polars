@@ -127,7 +127,6 @@ pub(super) unsafe fn join_asof_nearest_with_indirection_and_tolerance<
         }
 
         // We made it to the window: matches are now possible, start measuring distance.
-        found_window = true;
         let current_dist = if val_l > val_r {
             val_l - val_r
         } else {
@@ -141,9 +140,14 @@ pub(super) unsafe fn join_asof_nearest_with_indirection_and_tolerance<
             }
             prev_offset = offset;
         } else {
-            // We'ved moved farther away, so the last element was the match.
-            return (Some(prev_offset), idx - 1);
+            // We'ved moved farther away, so the last element was the match if it's within tolerance
+            if found_window {
+                return (Some(prev_offset), idx - 1);
+            } else {
+                return (None, n_right - 1);
+            }
         }
+        found_window = true;
     }
 
     // This should be unreachable.
@@ -770,9 +774,20 @@ pub trait AsofJoinBy: IntoDf {
         suffix: Option<&str>,
         slice: Option<(i64, usize)>,
     ) -> PolarsResult<DataFrame> {
-        let self_df = self.to_df();
+        let (self_sliced_slot, other_sliced_slot); // Keeps temporaries alive.
+        let (self_df, other_df);
+        if let Some((offset, len)) = slice {
+            self_sliced_slot = self.to_df().slice(offset, len);
+            other_sliced_slot = other.slice(offset, len);
+            self_df = &self_sliced_slot;
+            other_df = &other_sliced_slot;
+        } else {
+            self_df = self.to_df();
+            other_df = other;
+        }
+
         let left_asof = self_df.column(left_on)?.to_physical_repr();
-        let right_asof = other.column(right_on)?.to_physical_repr();
+        let right_asof = other_df.column(right_on)?.to_physical_repr();
         let right_asof_name = right_asof.name();
         let left_asof_name = left_asof.name();
 
@@ -783,7 +798,7 @@ pub trait AsofJoinBy: IntoDf {
         )?;
 
         let mut left_by = self_df.select(left_by)?;
-        let mut right_by = other.select(right_by)?;
+        let mut right_by = other_df.select(right_by)?;
 
         unsafe {
             for (l, r) in left_by
@@ -822,7 +837,7 @@ pub trait AsofJoinBy: IntoDf {
             drop_these.push(right_asof_name);
         }
 
-        let cols = other
+        let cols = other_df
             .get_columns()
             .iter()
             .filter_map(|s| {
@@ -833,19 +848,15 @@ pub trait AsofJoinBy: IntoDf {
                 }
             })
             .collect();
-        let other = DataFrame::new_no_checks(cols);
+        let proj_other_df = DataFrame::new_no_checks(cols);
 
-        let mut left = self_df.clone();
-        let mut right_join_tuples = &*right_join_tuples;
-
-        if let Some((offset, len)) = slice {
-            left = left.slice(offset, len);
-            right_join_tuples = slice_slice(right_join_tuples, offset, len);
-        }
+        let left = self_df.clone();
+        let right_join_tuples = &*right_join_tuples;
 
         // SAFETY: join tuples are in bounds.
-        let right_df =
-            unsafe { other.take_unchecked(&right_join_tuples.iter().copied().collect_ca("")) };
+        let right_df = unsafe {
+            proj_other_df.take_unchecked(&right_join_tuples.iter().copied().collect_ca(""))
+        };
 
         _finish_join(left, right_df, suffix)
     }

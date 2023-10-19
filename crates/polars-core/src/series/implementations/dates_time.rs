@@ -11,7 +11,7 @@ use std::borrow::Cow;
 use std::ops::Deref;
 
 use ahash::RandomState;
-use polars_arrow::prelude::QuantileInterpolOptions;
+use arrow::legacy::prelude::QuantileInterpolOptions;
 
 use super::{private, IntoSeries, SeriesTrait, SeriesWrap, *};
 use crate::chunked_array::ops::explode::ExplodeByOffsets;
@@ -52,17 +52,6 @@ macro_rules! impl_dyn_series {
                     .$into_logical()
                     .into_series()
             }
-
-            #[cfg(feature = "cum_agg")]
-            fn _cummax(&self, reverse: bool) -> Series {
-                self.0.cummax(reverse).$into_logical().into_series()
-            }
-
-            #[cfg(feature = "cum_agg")]
-            fn _cummin(&self, reverse: bool) -> Series {
-                self.0.cummin(reverse).$into_logical().into_series()
-            }
-
 
             #[cfg(feature = "zip_with")]
             fn zip_with_same_type(
@@ -400,40 +389,6 @@ macro_rules! impl_dyn_series {
 
             fn clone_inner(&self) -> Arc<dyn SeriesTrait> {
                 Arc::new(SeriesWrap(Clone::clone(&self.0)))
-            }
-
-            fn peak_max(&self) -> BooleanChunked {
-                self.0.peak_max()
-            }
-
-            fn peak_min(&self) -> BooleanChunked {
-                self.0.peak_min()
-            }
-            #[cfg(feature = "repeat_by")]
-            fn repeat_by(&self, by: &IdxCa) -> PolarsResult<ListChunked> {
-                match self.0.dtype() {
-                    DataType::Date => Ok(self
-                        .0
-                        .repeat_by(by)?
-                        .cast(&DataType::List(Box::new(DataType::Date)))
-                        .unwrap()
-                        .list()
-                        .unwrap()
-                        .clone()),
-                    DataType::Time => Ok(self
-                        .0
-                        .repeat_by(by)?
-                        .cast(&DataType::List(Box::new(DataType::Time)))
-                        .unwrap()
-                        .list()
-                        .unwrap()
-                        .clone()),
-                    _ => unreachable!(),
-                }
-            }
-            #[cfg(feature = "mode")]
-            fn mode(&self) -> PolarsResult<Series> {
-                self.0.mode().map(|ca| ca.$into_logical().into_series())
             }
         }
     };

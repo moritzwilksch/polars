@@ -31,7 +31,7 @@ use std::borrow::Cow;
 use std::ops::{BitAnd, BitOr, BitXor, Deref};
 
 use ahash::RandomState;
-use polars_arrow::prelude::QuantileInterpolOptions;
+use arrow::legacy::prelude::QuantileInterpolOptions;
 
 use super::{private, IntoSeries, SeriesTrait, *};
 use crate::chunked_array::comparison::*;
@@ -103,16 +103,6 @@ macro_rules! impl_dyn_series {
 
             fn explode_by_offsets(&self, offsets: &[i64]) -> Series {
                 self.0.explode_by_offsets(offsets)
-            }
-
-            #[cfg(feature = "cum_agg")]
-            fn _cummax(&self, reverse: bool) -> Series {
-                self.0.cummax(reverse).into_series()
-            }
-
-            #[cfg(feature = "cum_agg")]
-            fn _cummin(&self, reverse: bool) -> Series {
-                self.0.cummin(reverse).into_series()
             }
 
             unsafe fn equal_element(
@@ -434,19 +424,6 @@ macro_rules! impl_dyn_series {
                 Arc::new(SeriesWrap(Clone::clone(&self.0)))
             }
 
-            fn peak_max(&self) -> BooleanChunked {
-                self.0.peak_max()
-            }
-
-            fn peak_min(&self) -> BooleanChunked {
-                self.0.peak_min()
-            }
-
-            #[cfg(feature = "repeat_by")]
-            fn repeat_by(&self, by: &IdxCa) -> PolarsResult<ListChunked> {
-                RepeatBy::repeat_by(&self.0, by)
-            }
-
             #[cfg(feature = "checked_arithmetic")]
             fn checked_div(&self, rhs: &Series) -> PolarsResult<Series> {
                 self.0.checked_div(rhs)
@@ -455,15 +432,6 @@ macro_rules! impl_dyn_series {
             #[cfg(feature = "object")]
             fn as_any(&self) -> &dyn Any {
                 &self.0
-            }
-            #[cfg(feature = "mode")]
-            fn mode(&self) -> PolarsResult<Series> {
-                Ok(self.0.mode()?.into_series())
-            }
-
-            #[cfg(feature = "concat_str")]
-            fn str_concat(&self, delimiter: &str) -> Utf8Chunked {
-                self.0.str_concat(delimiter)
             }
 
             fn tile(&self, n: usize) -> Series {

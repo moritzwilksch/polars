@@ -392,13 +392,19 @@ def test_take_every() -> None:
 def test_take_misc(fruits_cars: pl.DataFrame) -> None:
     df = fruits_cars
 
-    # out of bounds error
+    # Out of bounds error.
     with pytest.raises(pl.ComputeError):
         (
             df.sort("fruits").select(
                 [pl.col("B").reverse().take([1, 2]).implode().over("fruits"), "fruits"]
             )
         )
+
+    # Null indices.
+    assert_frame_equal(
+        df.select(pl.col("fruits").take(pl.Series([0, None]))),
+        pl.DataFrame({"fruits": ["banana", None]}),
+    )
 
     for index in [[0, 1], pl.Series([0, 1]), np.array([0, 1])]:
         out = df.sort("fruits").select(
@@ -419,56 +425,6 @@ def test_take_misc(fruits_cars: pl.DataFrame) -> None:
     )
     assert out[0, "B"] == 3
     assert out[4, "B"] == 4
-
-
-def test_slice() -> None:
-    df = pl.DataFrame({"a": [1, 2, 3], "b": ["a", "b", "c"]})
-    expected = pl.DataFrame({"a": [2, 3], "b": ["b", "c"]})
-    for slice_params in (
-        [1, 10],  # slice > len(df)
-        [1, 2],  # slice == len(df)
-        [1],  # optional len
-    ):
-        assert_frame_equal(df.slice(*slice_params), expected)
-
-    for py_slice in (
-        slice(1, 2),
-        slice(0, 2, 2),
-        slice(3, -3, -1),
-        slice(1, None, -2),
-        slice(-1, -3, -1),
-        slice(-3, None, -3),
-    ):
-        # confirm frame slice matches python slice
-        assert df[py_slice].rows() == df.rows()[py_slice]
-
-
-def test_head_tail_limit() -> None:
-    df = pl.DataFrame({"a": range(10), "b": range(10)})
-
-    assert df.head(5).rows() == [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)]
-    assert_frame_equal(df.limit(5), df.head(5))
-    assert df.tail(5).rows() == [(5, 5), (6, 6), (7, 7), (8, 8), (9, 9)]
-    assert_frame_not_equal(df.head(5), df.tail(5))
-
-    # check if it doesn't fail when out of bounds
-    assert df.head(100).height == 10
-    assert df.limit(100).height == 10
-    assert df.tail(100).height == 10
-
-    # limit is an alias of head
-    assert_frame_equal(df.head(5), df.limit(5))
-
-    # negative values
-    assert df.head(-7).rows() == [(0, 0), (1, 1), (2, 2)]
-    assert len(df.head(-2)) == 8
-    assert df.tail(-8).rows() == [(8, 8), (9, 9)]
-    assert len(df.tail(-6)) == 4
-
-    # negative values out of bounds
-    assert len(df.head(-12)) == 0
-    assert len(df.limit(-12)) == 0
-    assert len(df.tail(-12)) == 0
 
 
 def test_pipe() -> None:
@@ -544,7 +500,7 @@ def test_file_buffer() -> None:
     f.write(b"1,2,3,4,5,6\n7,8,9,10,11,12")
     f.seek(0)
     # check if not fails on TryClone and Length impl in file.rs
-    with pytest.raises(pl.ArrowError):
+    with pytest.raises(pl.ComputeError):
         pl.read_parquet(f)
 
 
@@ -1052,11 +1008,10 @@ def test_describe() -> None:
             ("mean", 1.3333333333333333, None, None),
             ("std", 0.5773502691896257, None, None),
             ("min", 1.0, None, None),
-            ("50%", 1.0, None, None),
             ("max", 2.0, None, None),
         ]
 
-    described = df.describe(percentiles=(0.2, 0.4, 0.6, 0.8))
+    described = df.describe(percentiles=(0.2, 0.4, 0.5, 0.6, 0.8))
     assert described.schema == {
         "describe": pl.Utf8,
         "numerical": pl.Float64,
@@ -1144,7 +1099,7 @@ def test_to_numpy(order: IndexOrder, f_contiguous: bool, c_contiguous: bool) -> 
         df.to_numpy(structured=True),
         np.array([("x",), ("y",), (None,)], dtype=[("s", "O")]),
     )
-    assert df["s"][:2].has_validity()
+    assert not df["s"][:2].has_validity()
     assert_array_equal(
         df[:2].to_numpy(structured=True),
         np.array([("x",), ("y",)], dtype=[("s", "<U1")]),
@@ -1645,7 +1600,7 @@ def test_reproducible_hash_with_seeds() -> None:
     if platform.mac_ver()[-1] != "arm64":
         expected = pl.Series(
             "s",
-            [13477868900383131459, 988796329533502010, 16840582678788620208],
+            [13477868900383131459, 6344663067812082469, 16840582678788620208],
             dtype=pl.UInt64,
         )
         result = df.hash_rows(*seeds)
@@ -1882,6 +1837,14 @@ def test_schema() -> None:
     )
     expected = {"foo": pl.Int64, "bar": pl.Float64, "ham": pl.Utf8}
     assert df.schema == expected
+
+
+def test_schema_equality() -> None:
+    lf = pl.LazyFrame({"foo": [1, 2, 3], "bar": [6.0, 7.0, 8.0]})
+    lf_rev = lf.select("bar", "foo")
+
+    assert lf.schema != lf_rev.schema
+    assert lf.collect().schema != lf_rev.collect().schema
 
 
 def test_df_schema_unique() -> None:
@@ -2654,6 +2617,19 @@ def test_partition_by() -> None:
         "b": [1, 3],
     }
 
+    # test with both as_dict and include_key=False
+    df = pl.DataFrame(
+        {
+            "a": pl.int_range(0, 100, dtype=pl.UInt8, eager=True),
+            "b": pl.int_range(0, 100, dtype=pl.UInt8, eager=True),
+            "c": pl.int_range(0, 100, dtype=pl.UInt8, eager=True),
+            "d": pl.int_range(0, 100, dtype=pl.UInt8, eager=True),
+        }
+    ).sample(n=100_000, with_replacement=True, shuffle=True)
+
+    partitions = df.partition_by(["a", "b"], as_dict=True, include_key=False)
+    assert all(key == value.row(0) for key, value in partitions.items())
+
 
 def test_list_of_list_of_struct() -> None:
     expected = [{"list_of_list_of_struct": [[{"a": 1}, {"a": 2}]]}]
@@ -2846,6 +2822,49 @@ def test_filter_sequence() -> None:
     assert df.filter(np.array([True, False, True]))["a"].to_list() == [1, 3]
 
 
+def test_filter_multiple_predicates() -> None:
+    df = pl.DataFrame(
+        {
+            "a": [1, 1, 1, 2, 2],
+            "b": [1, 1, 2, 2, 2],
+            "c": [1, 1, 2, 3, 4],
+        }
+    )
+
+    # multiple predicates
+    expected = pl.DataFrame({"a": [1, 1, 1], "b": [1, 1, 2], "c": [1, 1, 2]})
+    for out in (
+        df.filter(pl.col("a") == 1, pl.col("b") <= 2),  # positional/splat
+        df.filter([pl.col("a") == 1, pl.col("b") <= 2]),  # as list
+    ):
+        assert_frame_equal(out, expected)
+
+    # multiple kwargs
+    assert_frame_equal(
+        df.filter(a=1, b=2),
+        pl.DataFrame({"a": [1], "b": [2], "c": [2]}),
+    )
+
+    # both positional and keyword args
+    assert_frame_equal(
+        pl.DataFrame({"a": [2], "b": [2], "c": [3]}),
+        df.filter(pl.col("c") < 4, a=2, b=2),
+    )
+
+    # boolean mask
+    out = df.filter([True, False, False, False, True])
+    expected = pl.DataFrame({"a": [1, 2], "b": [1, 2], "c": [1, 4]})
+    assert_frame_equal(out, expected)
+
+    # multiple boolean masks
+    out = df.filter(
+        np.array([True, True, False, True, False]),
+        np.array([True, False, True, True, False]),
+    )
+    expected = pl.DataFrame({"a": [1, 2], "b": [1, 2], "c": [1, 3]})
+    assert_frame_equal(out, expected)
+
+
 def test_indexing_set() -> None:
     df = pl.DataFrame({"bool": [True, True], "str": ["N/A", "N/A"], "nr": [1, 2]})
 
@@ -2869,8 +2888,8 @@ def test_set() -> None:
     )
     with pytest.raises(
         TypeError,
-        match=r"DataFrame object does not support `Series` assignment by index."
-        r"\n\nUse `DataFrame.with_columns`",
+        match=r"DataFrame object does not support `Series` assignment by index"
+        r"\n\nUse `DataFrame.with_columns`.",
     ):
         df["new"] = np.random.rand(10)
 

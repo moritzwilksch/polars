@@ -1,7 +1,7 @@
+use arrow::legacy::error::polars_bail;
 use futures::future::ready;
 use futures::{StreamExt, TryStreamExt};
 use object_store::path::Path;
-use polars_arrow::error::polars_bail;
 use polars_core::error::to_compute_err;
 use polars_core::prelude::{polars_ensure, polars_err, PolarsError, PolarsResult};
 use regex::Regex;
@@ -166,7 +166,7 @@ pub async fn glob(url: &str, cloud_options: Option<&CloudOptions>) -> PolarsResu
             expansion,
         },
         store,
-    ) = super::build_object_store(url, cloud_options)?;
+    ) = super::build_object_store(url, cloud_options).await?;
     let matcher = Matcher::new(prefix.clone(), expansion.as_deref())?;
 
     let list_stream = store

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pickle
 from datetime import date, datetime, time
 from typing import TYPE_CHECKING, Any
 
@@ -7,7 +8,7 @@ import pandas as pd
 import pytest
 
 import polars as pl
-from polars.testing import assert_series_equal
+from polars.testing import assert_frame_equal, assert_series_equal
 
 if TYPE_CHECKING:
     from polars import PolarsDataType
@@ -132,7 +133,7 @@ def test_list_fill_null() -> None:
     df = pl.DataFrame({"C": [["a", "b", "c"], [], [], ["d", "e"]]})
     assert df.with_columns(
         [
-            pl.when(pl.col("C").list.lengths() == 0)
+            pl.when(pl.col("C").list.len() == 0)
             .then(None)
             .otherwise(pl.col("C"))
             .alias("C")
@@ -143,7 +144,7 @@ def test_list_fill_null() -> None:
 def test_list_fill_list() -> None:
     assert pl.DataFrame({"a": [[1, 2, 3], []]}).select(
         [
-            pl.when(pl.col("a").list.lengths() == 0)
+            pl.when(pl.col("a").list.len() == 0)
             .then([5])
             .otherwise(pl.col("a"))
             .alias("filled")
@@ -467,10 +468,10 @@ def test_list_recursive_categorical_cast() -> None:
 @pytest.mark.parametrize(
     ("data", "expected_data", "dtype"),
     [
-        ([1, 2], [[1], [2]], pl.Int64),
-        ([1.0, 2.0], [[1.0], [2.0]], pl.Float64),
-        (["x", "y"], [["x"], ["y"]], pl.Utf8),
-        ([True, False], [[True], [False]], pl.Boolean),
+        ([None, 1, 2], [None, [1], [2]], pl.Int64),
+        ([None, 1.0, 2.0], [None, [1.0], [2.0]], pl.Float64),
+        ([None, "x", "y"], [None, ["x"], ["y"]], pl.Utf8),
+        ([None, True, False], [None, [True], [False]], pl.Boolean),
     ],
 )
 def test_non_nested_cast_to_list(
@@ -515,6 +516,11 @@ def test_list_null_list_categorical_cast() -> None:
     assert s.to_list() == [[]]
 
 
+def test_list_null_pickle() -> None:
+    df = pl.DataFrame([{"a": None}], schema={"a": pl.List(pl.Int64)})
+    assert_frame_equal(df, pickle.loads(pickle.dumps(df)))
+
+
 def test_struct_with_nulls_as_list() -> None:
     df = pl.DataFrame([[{"a": 1, "b": 2}], [{"c": 3, "d": None}]])
     assert df.select(pl.concat_list(pl.all()).alias("as_list")).to_dict(False) == {
@@ -538,3 +544,24 @@ def test_list_amortized_iter_clear_settings_10126() -> None:
     )
 
     assert out.to_dict(False) == {"a": [1, 2], "b": [[1, 2, 3], [4]]}
+
+
+def test_list_inner_cast_physical_11513() -> None:
+    df = pl.DataFrame(
+        {
+            "date": ["foo"],
+            "struct": [[]],
+        },
+        schema_overrides={
+            "struct": pl.List(
+                pl.Struct(
+                    {
+                        "field": pl.Struct(
+                            {"subfield": pl.List(pl.Struct({"subsubfield": pl.Date}))}
+                        )
+                    }
+                )
+            )
+        },
+    )
+    assert df.select(pl.col("struct").take(0)).to_dict(False) == {"struct": [[]]}

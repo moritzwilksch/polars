@@ -292,9 +292,9 @@ class Series:
             self._s = numpy_to_pyseries(
                 name, values, strict=strict, nan_to_null=nan_to_null
             )
-            if values.dtype.type == np.datetime64:
+            if values.dtype.type in [np.datetime64, np.timedelta64]:
                 # cast to appropriate dtype, handling NaT values
-                dtype = _resolve_datetime_dtype(dtype, values.dtype)
+                dtype = _resolve_temporal_dtype(dtype, values.dtype)
                 if dtype is not None:
                     self._s = (
                         self.cast(dtype)
@@ -483,6 +483,11 @@ class Series:
                 return ~self
 
         if isinstance(other, datetime) and self.dtype == Datetime:
+            time_zone = self.dtype.time_zone  # type: ignore[union-attr]
+            if str(other.tzinfo) != str(time_zone):
+                raise TypeError(
+                    f"Datetime time zone {other.tzinfo!r} does not match Series timezone {time_zone!r}"
+                )
             ts = _datetime_to_pl_timestamp(other, self.dtype.time_unit)  # type: ignore[union-attr]
             f = get_ffi_func(op + "_<>", Int64, self._s)
             assert f is not None
@@ -664,7 +669,7 @@ class Series:
 
     def ne_missing(self, other: Any) -> Self | Expr:
         """
-        Method equivalent of equality operator ``series != other`` where `None` == None`.
+        Method equivalent of equality operator ``series != other`` where ``None == None``.
 
         This differs from the standard ``ne`` where null values are propagated.
 
@@ -731,7 +736,7 @@ class Series:
             f = get_ffi_func(op_ffi, self.dtype, self._s)
         if f is None:
             raise TypeError(
-                f"cannot do arithmetic with series of dtype: {self.dtype} and argument"
+                f"cannot do arithmetic with series of dtype: {self.dtype!r} and argument"
                 f" of type: {type(other).__name__!r}"
             )
         return self._from_pyseries(f(other))
@@ -960,7 +965,7 @@ class Series:
             return self
 
         if self.dtype not in INTEGER_DTYPES:
-            raise NotImplementedError("unsupported idxs datatype.")
+            raise NotImplementedError("unsupported idxs datatype")
 
         if self.len() == 0:
             return Series(self.name, [], dtype=idx_type)
@@ -1496,7 +1501,7 @@ class Series:
         return wrap_df(PyDataFrame([self._s]))
 
     def describe(
-        self, percentiles: Sequence[float] | float | None = (0.25, 0.75)
+        self, percentiles: Sequence[float] | float | None = (0.25, 0.50, 0.75)
     ) -> DataFrame:
         """
         Quick summary statistics of a series.
@@ -1509,6 +1514,10 @@ class Series:
         percentiles
             One or more percentiles to include in the summary statistics (if the
             series has a numeric dtype). All values must be in the range `[0, 1]`.
+
+        Notes
+        -----
+        The median is included by default as the 50% percentile.
 
         Returns
         -------
@@ -3714,11 +3723,13 @@ class Series:
 
     def len(self) -> int:
         """
-        Length of this Series.
+        Return the number of elements in this Series.
+
+        Null values are treated like regular elements in this context.
 
         Examples
         --------
-        >>> s = pl.Series("a", [1, 2, 3])
+        >>> s = pl.Series("a", [1, 2, None])
         >>> s.len()
         3
 
@@ -3800,7 +3811,7 @@ class Series:
 
         """
 
-    def to_list(self, *, use_pyarrow: bool = False) -> list[Any]:
+    def to_list(self, *, use_pyarrow: bool | None = None) -> list[Any]:
         """
         Convert this Series to a Python List. This operation clones data.
 
@@ -3818,8 +3829,15 @@ class Series:
         <class 'list'>
 
         """
-        if use_pyarrow:
-            return self.to_arrow().to_pylist()
+        if use_pyarrow is not None:
+            issue_deprecation_warning(
+                "The parameter `use_pyarrow` for `Series.to_list` is deprecated."
+                " Call the method without `use_pyarrow` to silence this warning.",
+                version="0.19.9",
+            )
+            if use_pyarrow:
+                return self.to_arrow().to_pylist()
+
         return self._s.to_list()
 
     def rechunk(self, *, in_place: bool = False) -> Self:
@@ -4492,7 +4510,9 @@ class Series:
 
     def clone(self) -> Self:
         """
-        Very cheap deepcopy/clone.
+        Create a copy of this Series.
+
+        This is a cheap operation that does not copy data.
 
         See Also
         --------
@@ -4776,6 +4796,25 @@ class Series:
             0.0
             1.6331e16
             -1.2246e-16
+        ]
+
+        """
+
+    def cot(self) -> Series:
+        """
+        Compute the element-wise value for the cotangent.
+
+        Examples
+        --------
+        >>> import math
+        >>> s = pl.Series("a", [0.0, math.pi / 2.0, math.pi])
+        >>> s.cot()
+        shape: (3,)
+        Series: 'a' [f64]
+        [
+            inf
+            6.1232e-17
+            -8.1656e15
         ]
 
         """
@@ -5737,7 +5776,7 @@ class Series:
         >>> s = pl.Series("a", [1, 2, 3, 4, 5])
         >>> s.peak_max()
         shape: (5,)
-        Series: '' [bool]
+        Series: 'a' [bool]
         [
                 false
                 false
@@ -5747,7 +5786,6 @@ class Series:
         ]
 
         """
-        return self._from_pyseries(self._s.peak_max())
 
     def peak_min(self) -> Self:
         """
@@ -5758,7 +5796,7 @@ class Series:
         >>> s = pl.Series("a", [4, 1, 3, 2, 5])
         >>> s.peak_min()
         shape: (5,)
-        Series: '' [bool]
+        Series: 'a' [bool]
         [
             false
             true
@@ -5768,7 +5806,6 @@ class Series:
         ]
 
         """
-        return self._from_pyseries(self._s.peak_min())
 
     def n_unique(self) -> int:
         """
@@ -5864,13 +5901,13 @@ class Series:
         >>> s = pl.Series("a", [1, 2, None, None, 5])
         >>> s.interpolate()
         shape: (5,)
-        Series: 'a' [i64]
+        Series: 'a' [f64]
         [
-            1
-            2
-            3
-            4
-            5
+            1.0
+            2.0
+            3.0
+            4.0
+            5.0
         ]
 
         """
@@ -5996,7 +6033,7 @@ class Series:
 
         """
 
-    def pct_change(self, n: int = 1) -> Series:
+    def pct_change(self, n: int | IntoExprColumn = 1) -> Series:
         """
         Computes percentage change between values.
 
@@ -6376,6 +6413,7 @@ class Series:
 
         """
 
+    @deprecate_nonkeyword_arguments(version="0.19.10")
     def ewm_mean(
         self,
         com: float | None = None,
@@ -6443,8 +6481,21 @@ class Series:
                   :math:`1-\alpha` and :math:`1` if ``adjust=True``,
                   and :math:`1-\alpha` and :math:`\alpha` if ``adjust=False``.
 
+        Examples
+        --------
+        >>> s = pl.Series([1, 2, 3])
+        >>> s.ewm_mean(com=1)
+        shape: (3,)
+        Series: '' [f64]
+        [
+                1.0
+                1.666667
+                2.428571
+        ]
+
         """
 
+    @deprecate_nonkeyword_arguments(version="0.19.10")
     def ewm_std(
         self,
         com: float | None = None,
@@ -6530,6 +6581,7 @@ class Series:
 
         """
 
+    @deprecate_nonkeyword_arguments(version="0.19.10")
     def ewm_var(
         self,
         com: float | None = None,
@@ -6818,20 +6870,22 @@ class Series:
         return StructNameSpace(self)
 
 
-def _resolve_datetime_dtype(
-    dtype: PolarsDataType | None, ndtype: np.datetime64
+def _resolve_temporal_dtype(
+    dtype: PolarsDataType | None,
+    ndtype: np.dtype[np.datetime64] | np.dtype[np.timedelta64],
 ) -> PolarsDataType | None:
-    """Given polars/numpy datetime dtypes, resolve to an explicit unit."""
+    """Given polars/numpy temporal dtypes, resolve to an explicit unit."""
+    PolarsType = Duration if ndtype.type == np.timedelta64 else Datetime
     if dtype is None or (dtype == Datetime and not getattr(dtype, "time_unit", None)):
         time_unit = getattr(dtype, "time_unit", None) or np.datetime_data(ndtype)[0]
         # explicit formulation is verbose, but keeps mypy happy
         # (and avoids unsupported timeunits such as "s")
         if time_unit == "ns":
-            dtype = Datetime("ns")
+            dtype = PolarsType("ns")
         elif time_unit == "us":
-            dtype = Datetime("us")
+            dtype = PolarsType("us")
         elif time_unit == "ms":
-            dtype = Datetime("ms")
-        elif time_unit == "D":
+            dtype = PolarsType("ms")
+        elif time_unit == "D" and ndtype.type == np.datetime64:
             dtype = Date
     return dtype

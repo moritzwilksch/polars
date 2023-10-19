@@ -19,7 +19,6 @@ impl LogicalPlan {
             Cache { input, .. } => input.schema(),
             Sort { input, .. } => input.schema(),
             DataFrameScan { schema, .. } => Ok(Cow::Borrowed(schema)),
-            AnonymousScan { file_info, .. } => Ok(Cow::Borrowed(&file_info.schema)),
             Selection { input, .. } => input.schema(),
             Projection { schema, .. } => Ok(Cow::Borrowed(schema)),
             Aggregate { schema, .. } => Ok(Cow::Borrowed(schema)),
@@ -46,6 +45,9 @@ impl LogicalPlan {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct FileInfo {
     pub schema: SchemaRef,
+    // Stores the schema used for the reader, as the main schema can contain
+    // extra hive columns.
+    pub reader_schema: SchemaRef,
     // - known size
     // - estimated size
     pub row_estimation: (Option<usize>, usize),
@@ -55,7 +57,8 @@ pub struct FileInfo {
 impl FileInfo {
     pub fn new(schema: SchemaRef, row_estimation: (Option<usize>, usize)) -> Self {
         Self {
-            schema,
+            schema: schema.clone(),
+            reader_schema: schema.clone(),
             row_estimation,
             hive_parts: None,
         }
@@ -218,10 +221,6 @@ pub fn set_estimated_row_counts(
         PythonScan { .. } => {
             // TODO! get row estimation.
             (None, usize::MAX, _filter_count)
-        },
-        AnonymousScan { options, .. } => {
-            let size = options.n_rows;
-            (size, size.unwrap_or(usize::MAX), _filter_count)
         },
         lp => {
             lp.copy_inputs(scratch);

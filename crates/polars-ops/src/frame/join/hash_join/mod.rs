@@ -12,7 +12,6 @@ mod zip_outer;
 pub use args::*;
 pub use multiple_keys::private_left_join_multiple_keys;
 pub(super) use multiple_keys::*;
-use polars_core::prelude::*;
 use polars_core::utils::{_set_partition_size, slice_slice, split_ca};
 use polars_core::POOL;
 pub(super) use single_keys::*;
@@ -58,9 +57,9 @@ macro_rules! det_hash_prone_order {
     }};
 }
 
-pub(super) use det_hash_prone_order;
 #[cfg(feature = "performant")]
-use polars_arrow::conversion::primitive_to_vec;
+use arrow::legacy::conversion::primitive_to_vec;
+pub(super) use det_hash_prone_order;
 use polars_utils::hash_to_partition;
 
 pub(super) unsafe fn get_hash_tbl_threaded_join_partitioned<Item>(
@@ -133,19 +132,11 @@ pub trait JoinDispatch: IntoDf {
     ) -> PolarsResult<DataFrame> {
         let ca_self = self.to_df();
         let (left_idx, right_idx) = ids;
-        let materialize_left = || {
-            let mut left_idx = &*left_idx;
-            if let Some((offset, len)) = args.slice {
-                left_idx = slice_slice(left_idx, offset, len);
-            }
-            unsafe { ca_self._create_left_df_from_slice(left_idx, true, true) }
-        };
+        let materialize_left =
+            || unsafe { ca_self._create_left_df_from_slice(&left_idx, true, true) };
 
         let materialize_right = || {
-            let mut right_idx = &*right_idx;
-            if let Some((offset, len)) = args.slice {
-                right_idx = slice_slice(right_idx, offset, len);
-            }
+            let right_idx = &*right_idx;
             unsafe { other.take_unchecked(&right_idx.iter().copied().collect_ca("")) }
         };
         let (df_left, df_right) = POOL.join(materialize_left, materialize_right);
@@ -162,39 +153,38 @@ pub trait JoinDispatch: IntoDf {
     ) -> PolarsResult<DataFrame> {
         let ca_self = self.to_df();
         let suffix = &args.suffix;
-        let slice = args.slice;
         let (left_idx, right_idx) = ids;
         let materialize_left = || match left_idx {
-            ChunkJoinIds::Left(left_idx) => {
+            ChunkJoinIds::Left(left_idx) => unsafe {
                 let mut left_idx = &*left_idx;
-                if let Some((offset, len)) = slice {
+                if let Some((offset, len)) = args.slice {
                     left_idx = slice_slice(left_idx, offset, len);
                 }
-                unsafe { ca_self._create_left_df_from_slice(left_idx, true, true) }
+                ca_self._create_left_df_from_slice(left_idx, true, true)
             },
-            ChunkJoinIds::Right(left_idx) => {
+            ChunkJoinIds::Right(left_idx) => unsafe {
                 let mut left_idx = &*left_idx;
-                if let Some((offset, len)) = slice {
+                if let Some((offset, len)) = args.slice {
                     left_idx = slice_slice(left_idx, offset, len);
                 }
-                unsafe { ca_self.create_left_df_chunked(left_idx, true) }
+                ca_self.create_left_df_chunked(left_idx, true)
             },
         };
 
         let materialize_right = || match right_idx {
-            ChunkJoinOptIds::Left(right_idx) => {
+            ChunkJoinOptIds::Left(right_idx) => unsafe {
                 let mut right_idx = &*right_idx;
-                if let Some((offset, len)) = slice {
+                if let Some((offset, len)) = args.slice {
                     right_idx = slice_slice(right_idx, offset, len);
                 }
-                unsafe { other.take_unchecked(&right_idx.iter().copied().collect_ca("")) }
+                other.take_unchecked(&right_idx.iter().copied().collect_ca(""))
             },
-            ChunkJoinOptIds::Right(right_idx) => {
+            ChunkJoinOptIds::Right(right_idx) => unsafe {
                 let mut right_idx = &*right_idx;
-                if let Some((offset, len)) = slice {
+                if let Some((offset, len)) = args.slice {
                     right_idx = slice_slice(right_idx, offset, len);
                 }
-                unsafe { other._take_opt_chunked_unchecked(right_idx) }
+                other._take_opt_chunked_unchecked(right_idx)
             },
         };
         let (df_left, df_right) = POOL.join(materialize_left, materialize_right);
@@ -214,9 +204,17 @@ pub trait JoinDispatch: IntoDf {
         #[cfg(feature = "dtype-categorical")]
         _check_categorical_src(s_left.dtype(), s_right.dtype())?;
 
-        // ensure that the chunks are aligned otherwise we go OOB
         let mut left = ca_self.clone();
         let mut s_left = s_left.clone();
+        // Eagerly limit left if possible.
+        if let Some((offset, len)) = args.slice {
+            if offset == 0 {
+                left = left.slice(0, len);
+                s_left = s_left.slice(0, len);
+            }
+        }
+
+        // Ensure that the chunks are aligned otherwise we go OOB.
         let mut right = other.clone();
         let mut s_right = s_right.clone();
         if left.should_rechunk() {

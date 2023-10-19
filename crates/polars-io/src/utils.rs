@@ -75,6 +75,25 @@ pub(crate) fn apply_projection(schema: &ArrowSchema, projection: &[usize]) -> Ar
     ArrowSchema::from(fields)
 }
 
+#[cfg(feature = "parquet")]
+pub(crate) fn apply_projection_pl_schema(schema: &Schema, projection: &[usize]) -> Schema {
+    Schema::from_iter(projection.iter().map(|idx| {
+        let (name, dt) = schema.get_at_index(*idx).unwrap();
+        Field::new(name.as_str(), dt.clone())
+    }))
+}
+
+#[cfg(feature = "parquet")]
+pub(crate) fn columns_to_projection_pl_schema(
+    columns: &[String],
+    schema: &Schema,
+) -> PolarsResult<Vec<usize>> {
+    columns
+        .iter()
+        .map(|name| schema.try_get_full(name).map(|(idx, _, _)| idx))
+        .collect()
+}
+
 #[cfg(any(
     feature = "ipc",
     feature = "ipc_streaming",
@@ -85,11 +104,9 @@ pub(crate) fn columns_to_projection(
     columns: &[String],
     schema: &ArrowSchema,
 ) -> PolarsResult<Vec<usize>> {
-    use ahash::AHashMap;
-
     let mut prj = Vec::with_capacity(columns.len());
     if columns.len() > 100 {
-        let mut column_names = AHashMap::with_capacity(schema.fields.len());
+        let mut column_names = PlHashMap::with_capacity(schema.fields.len());
         schema.fields.iter().enumerate().for_each(|(i, c)| {
             column_names.insert(c.name.as_str(), i);
         });
@@ -165,6 +182,38 @@ pub static BOOLEAN_RE: Lazy<Regex> = Lazy::new(|| {
         .build()
         .unwrap()
 });
+
+pub fn materialize_projection(
+    with_columns: Option<&[String]>,
+    schema: &Schema,
+    hive_partitions: Option<&[Series]>,
+    has_row_count: bool,
+) -> Option<Vec<usize>> {
+    match hive_partitions {
+        None => with_columns.map(|with_columns| {
+            with_columns
+                .iter()
+                .map(|name| schema.index_of(name).unwrap() - has_row_count as usize)
+                .collect()
+        }),
+        Some(part_cols) => {
+            with_columns.map(|with_columns| {
+                with_columns
+                    .iter()
+                    .flat_map(|name| {
+                        // the hive partitions are added at the end of the schema, but we don't want to project
+                        // them from the file
+                        if part_cols.iter().any(|s| s.name() == name.as_str()) {
+                            None
+                        } else {
+                            Some(schema.index_of(name).unwrap() - has_row_count as usize)
+                        }
+                    })
+                    .collect()
+            })
+        },
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -14,6 +14,7 @@ use polars::series::ops::NullBehavior;
 use polars_core::frame::row::any_values_to_dtype;
 use polars_core::prelude::{IndexOrder, QuantileInterpolOptions};
 use polars_core::utils::arrow::types::NativeType;
+use polars_core::utils::arrow::util::total_ord::TotalEq;
 use polars_lazy::prelude::*;
 #[cfg(feature = "cloud")]
 use polars_rs::io::cloud::CloudOptions;
@@ -955,6 +956,12 @@ impl PartialEq for ObjectValue {
     }
 }
 
+impl TotalEq for ObjectValue {
+    fn tot_eq(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
 impl Display for ObjectValue {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.inner)
@@ -1050,7 +1057,7 @@ pub(crate) fn dicts_to_rows(
 
         let mut row = Vec::with_capacity(key_names.len());
         for k in key_names.iter() {
-            let val = match d.get_item(k) {
+            let val = match d.get_item(k)? {
                 None => AnyValue::Null,
                 Some(val) => val.extract::<Wrap<AnyValue>>()?.0,
             };

@@ -7,11 +7,11 @@ use polars_io::{is_cloud_url, RowCount};
 
 use crate::prelude::*;
 
-pub type GlobIterator = Box<dyn Iterator<Item = PolarsResult<PathBuf>>>;
+pub type PathIterator = Box<dyn Iterator<Item = PolarsResult<PathBuf>>>;
 
 // cloud_options is used only with async feature
 #[allow(unused_variables)]
-fn polars_glob(pattern: &str, cloud_options: Option<&CloudOptions>) -> PolarsResult<GlobIterator> {
+fn polars_glob(pattern: &str, cloud_options: Option<&CloudOptions>) -> PolarsResult<PathIterator> {
     if is_cloud_url(pattern) {
         #[cfg(feature = "async")]
         {
@@ -34,12 +34,14 @@ fn polars_glob(pattern: &str, cloud_options: Option<&CloudOptions>) -> PolarsRes
 /// Use [LazyFileListReader::finish] to get the final [LazyFrame].
 pub trait LazyFileListReader: Clone {
     /// Get the final [LazyFrame].
-    fn finish(self) -> PolarsResult<LazyFrame> {
-        if let Some(paths) = self.glob()? {
+    fn finish(mut self) -> PolarsResult<LazyFrame> {
+        if let Some(paths) = self.iter_paths()? {
             let lfs = paths
-                .map(|r| {
+                .enumerate()
+                .map(|(i, r)| {
                     let path = r?;
-                    self.clone()
+                    let lf = self
+                        .clone()
                         .with_path(path.clone())
                         .with_rechunk(false)
                         .finish_no_glob()
@@ -47,7 +49,15 @@ pub trait LazyFileListReader: Clone {
                             polars_err!(
                                 ComputeError: "error while reading {}: {}", path.display(), e
                             )
-                        })
+                        });
+
+                    if i == 0 {
+                        let lf = lf?;
+                        self.set_known_schema(lf.schema()?);
+                        Ok(lf)
+                    } else {
+                        lf
+                    }
                 })
                 .collect::<PolarsResult<Vec<_>>>()?;
 
@@ -88,10 +98,17 @@ pub trait LazyFileListReader: Clone {
     /// It can be potentially a glob pattern.
     fn path(&self) -> &Path;
 
+    fn paths(&self) -> &[PathBuf];
+
     /// Set path of the scanned file.
     /// Support glob patterns.
     #[must_use]
     fn with_path(self, path: PathBuf) -> Self;
+
+    /// Set paths of the scanned files.
+    /// Doesn't glob patterns.
+    #[must_use]
+    fn with_paths(self, paths: Vec<PathBuf>) -> Self;
 
     /// Rechunk the memory to contiguous chunks when parsing is done.
     fn rechunk(&self) -> bool;
@@ -112,15 +129,31 @@ pub trait LazyFileListReader: Clone {
         None
     }
 
+    /// Set a schema on first glob pattern, so that others don't have to fetch metadata
+    /// from cloud
+    fn known_schema(&self) -> Option<SchemaRef> {
+        None
+    }
+
+    fn set_known_schema(&mut self, _known_schema: SchemaRef) {}
+
     /// Get list of files referenced by this reader.
     ///
     /// Returns [None] if path is not a glob pattern.
-    fn glob(&self) -> PolarsResult<Option<GlobIterator>> {
-        let path_str = self.path().to_string_lossy();
-        if path_str.contains('*') || path_str.contains('?') || path_str.contains('[') {
-            polars_glob(&path_str, self.cloud_options()).map(Some)
+    fn iter_paths(&self) -> PolarsResult<Option<PathIterator>> {
+        let paths = self.paths();
+        if paths.is_empty() {
+            let path_str = self.path().to_string_lossy();
+            if path_str.contains('*') || path_str.contains('?') || path_str.contains('[') {
+                polars_glob(&path_str, self.cloud_options()).map(Some)
+            } else {
+                Ok(None)
+            }
         } else {
-            Ok(None)
+            polars_ensure!(self.path().to_string_lossy() == "", InvalidOperation: "expected only a single path argument");
+            // Lint is incorrect as we need static lifetime.
+            #[allow(clippy::unnecessary_to_owned)]
+            Ok(Some(Box::new(paths.to_vec().into_iter().map(Ok))))
         }
     }
 }

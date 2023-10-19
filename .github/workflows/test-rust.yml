@@ -32,7 +32,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Rust
         run: rustup show
@@ -49,7 +49,6 @@ jobs:
           -p polars-plan
           -p polars-io
           -p polars-core
-          -p polars-arrow
           -p polars-time
           -p polars-utils
           -p polars-row
@@ -63,7 +62,6 @@ jobs:
           -p polars-plan
           -p polars-io
           -p polars-core
-          -p polars-arrow
           -p polars-time
           -p polars-utils
           -p polars-row
@@ -77,7 +75,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Rust
         run: rustup show
@@ -97,7 +95,7 @@ jobs:
   check-features:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Rust
         run: rustup show
@@ -118,7 +116,7 @@ jobs:
   check-wasm:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Rust
         run: |

@@ -1,6 +1,6 @@
 use std::any::Any;
 
-use polars_arrow::export::arrow::array::BinaryArray;
+use arrow::array::BinaryArray;
 use polars_core::prelude::sort::_broadcast_descending;
 use polars_core::prelude::sort::arg_sort_multiple::_get_rows_encoded_compat_array;
 use polars_core::prelude::*;
@@ -68,7 +68,7 @@ fn finalize_dataframe(
 
         // we decode the row-encoded binary column
         // this will be decoded into multiple columns
-        // this are the columns we sorted by
+        // these are the columns we sorted by
         // those need to be inserted at the `sort_idx` position
         // in the `DataFrame`.
         if can_decode {

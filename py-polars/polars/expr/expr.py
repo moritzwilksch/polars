@@ -27,6 +27,7 @@ from polars.datatypes import (
     FLOAT_DTYPES,
     INTEGER_DTYPES,
     Categorical,
+    Null,
     Struct,
     UInt32,
     Utf8,
@@ -48,7 +49,7 @@ from polars.utils._parse_expr_input import (
     parse_as_expression,
     parse_as_list_of_expressions,
 )
-from polars.utils.convert import _timedelta_to_pl_duration
+from polars.utils.convert import _negate_duration, _timedelta_to_pl_duration
 from polars.utils.deprecation import (
     deprecate_function,
     deprecate_nonkeyword_arguments,
@@ -139,7 +140,7 @@ class Expr:
         raise TypeError(
             "the truth value of an Expr is ambiguous"
             "\n\nHint: use '&' or '|' to logically combine Expr, not 'and'/'or', and"
-            " use 'x.is_in([y,z])' instead of 'x in [y,z]' to check membership"
+            " use `x.is_in([y,z])` instead of `x in [y,z]` to check membership."
         )
 
     def __abs__(self) -> Self:
@@ -1240,15 +1241,15 @@ class Expr:
 
     def count(self) -> Self:
         """
-        Count the number of values in this expression.
+        Return the number of elements in the column.
 
         .. warning::
-            `null` is deemed a value in this context.
+            Null values are treated like regular elements in this context.
 
         Examples
         --------
         >>> df = pl.DataFrame({"a": [8, 9, 10], "b": [None, 4, 4]})
-        >>> df.select(pl.all().count())  # counts nulls
+        >>> df.select(pl.all().count())
         shape: (1, 2)
         ┌─────┬─────┐
         │ a   ┆ b   │
@@ -1263,19 +1264,16 @@ class Expr:
 
     def len(self) -> Self:
         """
-        Count the number of values in this expression.
+        Return the number of elements in the column.
+
+        Null values are treated like regular elements in this context.
 
         Alias for :func:`count`.
 
         Examples
         --------
-        >>> df = pl.DataFrame(
-        ...     {
-        ...         "a": [8, 9, 10],
-        ...         "b": [None, 4, 4],
-        ...     }
-        ... )
-        >>> df.select(pl.all().len())  # counts nulls
+        >>> df = pl.DataFrame({"a": [8, 9, 10], "b": [None, 4, 4]})
+        >>> df.select(pl.all().len())
         shape: (1, 2)
         ┌─────┬─────┐
         │ a   ┆ b   │
@@ -2365,18 +2363,18 @@ class Expr:
         Examples
         --------
         >>> df = pl.DataFrame({"foo": [1, 2, 3, 4]})
-        >>> df.select(pl.col("foo").shift(1))
-        shape: (4, 1)
-        ┌──────┐
-        │ foo  │
-        │ ---  │
-        │ i64  │
-        ╞══════╡
-        │ null │
-        │ 1    │
-        │ 2    │
-        │ 3    │
-        └──────┘
+        >>> df.with_columns(foo_shifted=pl.col("foo").shift(1))
+        shape: (4, 2)
+        ┌─────┬─────────────┐
+        │ foo ┆ foo_shifted │
+        │ --- ┆ ---         │
+        │ i64 ┆ i64         │
+        ╞═════╪═════════════╡
+        │ 1   ┆ null        │
+        │ 2   ┆ 1           │
+        │ 3   ┆ 2           │
+        │ 4   ┆ 3           │
+        └─────┴─────────────┘
 
         """
         return self._from_pyexpr(self._pyexpr.shift(periods))
@@ -2400,18 +2398,18 @@ class Expr:
         Examples
         --------
         >>> df = pl.DataFrame({"foo": [1, 2, 3, 4]})
-        >>> df.select(pl.col("foo").shift_and_fill("a", periods=1))
-        shape: (4, 1)
-        ┌─────┐
-        │ foo │
-        │ --- │
-        │ str │
-        ╞═════╡
-        │ a   │
-        │ 1   │
-        │ 2   │
-        │ 3   │
-        └─────┘
+        >>> df.with_columns(foo_shifted=pl.col("foo").shift_and_fill("a", periods=1))
+        shape: (4, 2)
+        ┌─────┬─────────────┐
+        │ foo ┆ foo_shifted │
+        │ --- ┆ ---         │
+        │ i64 ┆ str         │
+        ╞═════╪═════════════╡
+        │ 1   ┆ a           │
+        │ 2   ┆ 1           │
+        │ 3   ┆ 2           │
+        │ 4   ┆ 3           │
+        └─────┴─────────────┘
 
         """
         fill_value = parse_as_expression(fill_value, str_as_lit=True)
@@ -3180,6 +3178,123 @@ class Expr:
         exprs = parse_as_list_of_expressions(expr, *more_exprs)
         return self._from_pyexpr(self._pyexpr.over(exprs, mapping_strategy))
 
+    def rolling(
+        self,
+        index_column: str,
+        *,
+        period: str | timedelta,
+        offset: str | timedelta | None = None,
+        closed: ClosedInterval = "right",
+        check_sorted: bool = True,
+    ) -> Self:
+        """
+        Create rolling groups based on a time, Int32, or Int64 column.
+
+        If you have a time series ``<t_0, t_1, ..., t_n>``, then by default the
+        windows created will be
+
+            * (t_0 - period, t_0]
+            * (t_1 - period, t_1]
+            * ...
+            * (t_n - period, t_n]
+
+        The `period` and `offset` arguments are created either from a timedelta, or
+        by using the following string language:
+
+        - 1ns   (1 nanosecond)
+        - 1us   (1 microsecond)
+        - 1ms   (1 millisecond)
+        - 1s    (1 second)
+        - 1m    (1 minute)
+        - 1h    (1 hour)
+        - 1d    (1 calendar day)
+        - 1w    (1 calendar week)
+        - 1mo   (1 calendar month)
+        - 1q    (1 calendar quarter)
+        - 1y    (1 calendar year)
+        - 1i    (1 index count)
+
+        Or combine them:
+        "3d12h4m25s" # 3 days, 12 hours, 4 minutes, and 25 seconds
+
+        Suffix with `"_saturating"` to indicate that dates too large for
+        their month should saturate at the largest date (e.g. 2022-02-29 -> 2022-02-28)
+        instead of erroring.
+
+        By "calendar day", we mean the corresponding time on the next day (which may
+        not be 24 hours, due to daylight savings). Similarly for "calendar week",
+        "calendar month", "calendar quarter", and "calendar year".
+
+        In case of a rolling operation on an integer column, the windows are defined by:
+
+        - "1i"      # length 1
+        - "10i"     # length 10
+
+        Parameters
+        ----------
+        index_column
+            Column used to group based on the time window.
+            Often of type Date/Datetime.
+            This column must be sorted in ascending order.
+            In case of a rolling group by on indices, dtype needs to be one of
+            {Int32, Int64}. Note that Int32 gets temporarily cast to Int64, so if
+            performance matters use an Int64 column.
+        period
+            length of the window - must be non-negative
+        offset
+            offset of the window. Default is -period
+        closed : {'right', 'left', 'both', 'none'}
+            Define which sides of the temporal interval are closed (inclusive).
+        check_sorted
+            When the ``by`` argument is given, polars can not check sortedness
+            by the metadata and has to do a full scan on the index column to
+            verify data is sorted. This is expensive. If you are sure the
+            data within the by groups is sorted, you can set this to ``False``.
+            Doing so incorrectly will lead to incorrect output
+
+        Examples
+        --------
+        >>> dates = [
+        ...     "2020-01-01 13:45:48",
+        ...     "2020-01-01 16:42:13",
+        ...     "2020-01-01 16:45:09",
+        ...     "2020-01-02 18:12:48",
+        ...     "2020-01-03 19:45:32",
+        ...     "2020-01-08 23:16:43",
+        ... ]
+        >>> df = pl.DataFrame({"dt": dates, "a": [3, 7, 5, 9, 2, 1]}).with_columns(
+        ...     pl.col("dt").str.strptime(pl.Datetime).set_sorted()
+        ... )
+        >>> df.with_columns(
+        ...     sum_a=pl.sum("a").rolling(index_column="dt", period="2d"),
+        ...     min_a=pl.min("a").rolling(index_column="dt", period="2d"),
+        ...     max_a=pl.max("a").rolling(index_column="dt", period="2d"),
+        ... )
+        shape: (6, 5)
+        ┌─────────────────────┬─────┬───────┬───────┬───────┐
+        │ dt                  ┆ a   ┆ sum_a ┆ min_a ┆ max_a │
+        │ ---                 ┆ --- ┆ ---   ┆ ---   ┆ ---   │
+        │ datetime[μs]        ┆ i64 ┆ i64   ┆ i64   ┆ i64   │
+        ╞═════════════════════╪═════╪═══════╪═══════╪═══════╡
+        │ 2020-01-01 13:45:48 ┆ 3   ┆ 3     ┆ 3     ┆ 3     │
+        │ 2020-01-01 16:42:13 ┆ 7   ┆ 10    ┆ 3     ┆ 7     │
+        │ 2020-01-01 16:45:09 ┆ 5   ┆ 15    ┆ 3     ┆ 7     │
+        │ 2020-01-02 18:12:48 ┆ 9   ┆ 24    ┆ 3     ┆ 9     │
+        │ 2020-01-03 19:45:32 ┆ 2   ┆ 11    ┆ 2     ┆ 9     │
+        │ 2020-01-08 23:16:43 ┆ 1   ┆ 1     ┆ 1     ┆ 1     │
+        └─────────────────────┴─────┴───────┴───────┴───────┘
+
+        """
+        if offset is None:
+            offset = _negate_duration(_timedelta_to_pl_duration(period))
+
+        period = _timedelta_to_pl_duration(period)
+        offset = _timedelta_to_pl_duration(offset)
+
+        return self._from_pyexpr(
+            self._pyexpr.rolling(index_column, period, offset, closed, check_sorted)
+        )
+
     def is_unique(self) -> Self:
         """
         Get mask of unique values.
@@ -3286,6 +3401,54 @@ class Expr:
 
         """
         return self._from_pyexpr(self._pyexpr.is_duplicated())
+
+    def peak_max(self) -> Self:
+        """
+        Get a boolean mask of the local maximum peaks.
+
+        Examples
+        --------
+        >>> df = pl.DataFrame({"a": [1, 2, 3, 4, 5]})
+        >>> df.select(pl.col("a").peak_max())
+        shape: (5, 1)
+        ┌───────┐
+        │ a     │
+        │ ---   │
+        │ bool  │
+        ╞═══════╡
+        │ false │
+        │ false │
+        │ false │
+        │ false │
+        │ true  │
+        └───────┘
+
+        """
+        return self._from_pyexpr(self._pyexpr.peak_max())
+
+    def peak_min(self) -> Self:
+        """
+        Get a boolean mask of the local minimum peaks.
+
+        Examples
+        --------
+        >>> df = pl.DataFrame({"a": [4, 1, 3, 2, 5]})
+        >>> df.select(pl.col("a").peak_min())
+        shape: (5, 1)
+        ┌───────┐
+        │ a     │
+        │ ---   │
+        │ bool  │
+        ╞═══════╡
+        │ false │
+        │ true  │
+        │ false │
+        │ true  │
+        │ false │
+        └───────┘
+
+        """
+        return self._from_pyexpr(self._pyexpr.peak_min())
 
     def quantile(
         self,
@@ -4546,7 +4709,7 @@ class Expr:
 
     def ne_missing(self, other: Any) -> Self:
         """
-        Method equivalent of equality operator ``expr != other`` where `None` == None`.
+        Method equivalent of equality operator ``expr != other`` where ``None == None``.
 
         This differs from default ``ne`` where null values are propagated.
 
@@ -4930,8 +5093,8 @@ class Expr:
         if isinstance(other, Collection) and not isinstance(other, str):
             if isinstance(other, (Set, FrozenSet)):
                 other = list(other)
-            other = F.lit(pl.Series(other))
-            other = other._pyexpr
+            implied_dtype = Null if len(other) == 0 else None
+            other = F.lit(pl.Series(other, dtype=implied_dtype))._pyexpr
         else:
             other = parse_as_expression(other)
         return self._from_pyexpr(self._pyexpr.is_in(other))
@@ -5224,11 +5387,11 @@ class Expr:
         ┌─────┬─────┐
         │ a   ┆ b   │
         │ --- ┆ --- │
-        │ i64 ┆ f64 │
+        │ f64 ┆ f64 │
         ╞═════╪═════╡
-        │ 1   ┆ 1.0 │
-        │ 2   ┆ NaN │
-        │ 3   ┆ 3.0 │
+        │ 1.0 ┆ 1.0 │
+        │ 2.0 ┆ NaN │
+        │ 3.0 ┆ 3.0 │
         └─────┴─────┘
 
         Fill null values using nearest interpolation.
@@ -5350,7 +5513,7 @@ class Expr:
         by
             If the `window_size` is temporal for instance `"5h"` or `"3s"`, you must
             set the column that will be used to determine the windows. This column must
-            be of dtype Datetime.
+            be of dtype Datetime or Date.
 
             .. warning::
                 If passed, the column must be sorted in ascending order. Otherwise,
@@ -5367,7 +5530,7 @@ class Expr:
         Notes
         -----
         If you want to compute multiple aggregation statistics over the same dynamic
-        window, consider using `group_by_rolling` this method can cache the window size
+        window, consider using `rolling` - this method can cache the window size
         computation.
 
         Examples
@@ -5560,7 +5723,7 @@ class Expr:
         by
             If the `window_size` is temporal, for instance `"5h"` or `"3s"`, you must
             set the column that will be used to determine the windows. This column must
-            be of dtype Datetime.
+            be of dtype Datetime or Date.
         closed : {'left', 'right', 'both', 'none'}
             Define which sides of the temporal interval are closed (inclusive); only
             applicable if `by` has been set.
@@ -5573,7 +5736,7 @@ class Expr:
         Notes
         -----
         If you want to compute multiple aggregation statistics over the same dynamic
-        window, consider using `group_by_rolling` this method can cache the window size
+        window, consider using `rolling` - this method can cache the window size
         computation.
 
         Examples
@@ -5793,7 +5956,7 @@ class Expr:
         by
             If the `window_size` is temporal for instance `"5h"` or `"3s"`, you must
             set the column that will be used to determine the windows. This column must
-            be of dtype Datetime.
+            be of dtype Datetime or Date.
 
             .. warning::
                 If passed, the column must be sorted in ascending order. Otherwise,
@@ -5810,7 +5973,7 @@ class Expr:
         Notes
         -----
         If you want to compute multiple aggregation statistics over the same dynamic
-        window, consider using `group_by_rolling` this method can cache the window size
+        window, consider using `rolling` - this method can cache the window size
         computation.
 
         Examples
@@ -6043,7 +6206,7 @@ class Expr:
         Notes
         -----
         If you want to compute multiple aggregation statistics over the same dynamic
-        window, consider using `group_by_rolling` this method can cache the window size
+        window, consider using `rolling` - this method can cache the window size
         computation.
 
         Examples
@@ -6260,7 +6423,7 @@ class Expr:
         by
             If the `window_size` is temporal for instance `"5h"` or `"3s"`, you must
             set the column that will be used to determine the windows. This column must
-            be of dtype Datetime.
+            be of dtype Datetime or Date.
 
             .. warning::
                 If passed, the column must be sorted in ascending order. Otherwise,
@@ -6279,7 +6442,7 @@ class Expr:
         Notes
         -----
         If you want to compute multiple aggregation statistics over the same dynamic
-        window, consider using `group_by_rolling` this method can cache the window size
+        window, consider using `rolling` - this method can cache the window size
         computation.
 
         Examples
@@ -6496,7 +6659,7 @@ class Expr:
         by
             If the `window_size` is temporal for instance `"5h"` or `"3s"`, you must
             set the column that will be used to determine the windows. This column must
-            be of dtype Datetime.
+            be of dtype Datetime or Date.
 
             .. warning::
                 If passed, the column must be sorted in ascending order. Otherwise,
@@ -6515,7 +6678,7 @@ class Expr:
         Notes
         -----
         If you want to compute multiple aggregation statistics over the same dynamic
-        window, consider using `group_by_rolling` this method can cache the window size
+        window, consider using `rolling` - this method can cache the window size
         computation.
 
         Examples
@@ -6737,7 +6900,7 @@ class Expr:
         by
             If the `window_size` is temporal for instance `"5h"` or `"3s"`, you must
             set the column that will be used to determine the windows. This column must
-            be of dtype Datetime.
+            be of dtype Datetime or Date.
 
             .. warning::
                 If passed, the column must be sorted in ascending order. Otherwise,
@@ -6754,7 +6917,7 @@ class Expr:
         Notes
         -----
         If you want to compute multiple aggregation statistics over the same dynamic
-        window, consider using `group_by_rolling` this method can cache the window size
+        window, consider using `rolling` - this method can cache the window size
         computation.
 
         Examples
@@ -6902,7 +7065,7 @@ class Expr:
         by
             If the `window_size` is temporal for instance `"5h"` or `"3s"`, you must
             set the column that will be used to determine the windows. This column must
-            be of dtype Datetime.
+            be of dtype Datetime or Date.
 
             .. warning::
                 If passed, the column must be sorted in ascending order. Otherwise,
@@ -6919,7 +7082,7 @@ class Expr:
         Notes
         -----
         If you want to compute multiple aggregation statistics over the same dynamic
-        window, consider using `group_by_rolling` this method can cache the window size
+        window, consider using `rolling` - this method can cache the window size
         computation.
 
         Examples
@@ -7301,7 +7464,7 @@ class Expr:
         """
         return self._from_pyexpr(self._pyexpr.diff(n, null_behavior))
 
-    def pct_change(self, n: int = 1) -> Self:
+    def pct_change(self, n: int | IntoExprColumn = 1) -> Self:
         """
         Computes percentage change between values.
 
@@ -7337,6 +7500,7 @@ class Expr:
         └──────┴────────────┘
 
         """
+        n = parse_as_expression(n)
         return self._from_pyexpr(self._pyexpr.pct_change(n))
 
     def skew(self, *, bias: bool = True) -> Self:
@@ -7694,6 +7858,31 @@ class Expr:
 
         """
         return self._from_pyexpr(self._pyexpr.tan())
+
+    def cot(self) -> Self:
+        """
+        Compute the element-wise value for the cotangent.
+
+        Returns
+        -------
+        Expr
+            Expression of data type :class:`Float64`.
+
+        Examples
+        --------
+        >>> df = pl.DataFrame({"a": [1.0]})
+        >>> df.select(pl.col("a").cot().round(2))
+        shape: (1, 1)
+        ┌──────┐
+        │ a    │
+        │ ---  │
+        │ f64  │
+        ╞══════╡
+        │ 0.64 │
+        └──────┘
+
+        """
+        return self._from_pyexpr(self._pyexpr.cot())
 
     def arcsin(self) -> Self:
         """
@@ -8111,6 +8300,7 @@ class Expr:
             self._pyexpr.sample_n(n, with_replacement, shuffle, seed)
         )
 
+    @deprecate_nonkeyword_arguments(version="0.19.10")
     def ewm_mean(
         self,
         com: float | None = None,
@@ -8178,7 +8368,6 @@ class Expr:
                   :math:`1-\alpha` and :math:`1` if ``adjust=True``,
                   and :math:`1-\alpha` and :math:`\alpha` if ``adjust=False``.
 
-
         Examples
         --------
         >>> df = pl.DataFrame({"a": [1, 2, 3]})
@@ -8200,6 +8389,7 @@ class Expr:
             self._pyexpr.ewm_mean(alpha, adjust, min_periods, ignore_nulls)
         )
 
+    @deprecate_nonkeyword_arguments(version="0.19.10")
     def ewm_std(
         self,
         com: float | None = None,
@@ -8292,6 +8482,7 @@ class Expr:
             self._pyexpr.ewm_std(alpha, adjust, bias, min_periods, ignore_nulls)
         )
 
+    @deprecate_nonkeyword_arguments(version="0.19.10")
     def ewm_var(
         self,
         com: float | None = None,
@@ -9001,7 +9192,7 @@ class Expr:
                     ) from exc
                 else:
                     raise ValueError(
-                        f"choose a more suitable output dtype for map_dict as remapping value could not be converted to {dtype!r}: {exc!s}"
+                        f"choose a more suitable output dtype for `map_dict` as remapping value could not be converted to {dtype!r}: {exc!s}"
                     ) from exc
 
             if is_keys:
@@ -9320,10 +9511,11 @@ class Expr:
 
     def _register_plugin(
         self,
+        *,
         lib: str,
         symbol: str,
         args: list[IntoExpr] | None = None,
-        *,
+        kwargs: dict[Any, Any] | None = None,
         is_elementwise: bool = False,
         input_wildcard_expansion: bool = False,
         auto_explode: bool = False,
@@ -9348,6 +9540,9 @@ class Expr:
             Function to load.
         args
             Arguments (other than self) passed to this function.
+            These arguments have to be of type Expression.
+        kwargs
+            Non-expression arguments. They must be JSON serializable.
         is_elementwise
             If the function only operates on scalars
             this will trigger fast paths.
@@ -9364,11 +9559,19 @@ class Expr:
             args = []
         else:
             args = [parse_as_expression(a) for a in args]
+        if kwargs is None:
+            serialized_kwargs = b""
+        else:
+            import pickle
+
+            serialized_kwargs = pickle.dumps(kwargs, protocol=2)
+
         return self._from_pyexpr(
             self._pyexpr.register_plugin(
                 lib,
                 symbol,
                 args,
+                serialized_kwargs,
                 is_elementwise,
                 input_wildcard_expansion,
                 auto_explode,
@@ -9518,28 +9721,28 @@ def _prepare_alpha(
     """Normalise EWM decay specification in terms of smoothing factor 'alpha'."""
     if sum((param is not None) for param in (com, span, half_life, alpha)) > 1:
         raise ValueError(
-            "parameters 'com', 'span', 'half_life', and 'alpha' are mutually exclusive"
+            "parameters `com`, `span`, `half_life`, and `alpha` are mutually exclusive"
         )
     if com is not None:
         if com < 0.0:
-            raise ValueError(f"require 'com' >= 0 (found {com!r})")
+            raise ValueError(f"require `com` >= 0 (found {com!r})")
         alpha = 1.0 / (1.0 + com)
 
     elif span is not None:
         if span < 1.0:
-            raise ValueError(f"require 'span' >= 1 (found {span!r})")
+            raise ValueError(f"require `span` >= 1 (found {span!r})")
         alpha = 2.0 / (span + 1.0)
 
     elif half_life is not None:
         if half_life <= 0.0:
-            raise ValueError(f"require 'half_life' > 0 (found {half_life!r})")
+            raise ValueError(f"require `half_life` > 0 (found {half_life!r})")
         alpha = 1.0 - math.exp(-math.log(2.0) / half_life)
 
     elif alpha is None:
-        raise ValueError("one of 'com', 'span', 'half_life', or 'alpha' must be set")
+        raise ValueError("one of `com`, `span`, `half_life`, or `alpha` must be set")
 
     elif not (0 < alpha <= 1):
-        raise ValueError(f"require 0 < 'alpha' <= 1 (found {alpha!r})")
+        raise ValueError(f"require 0 < `alpha` <= 1 (found {alpha!r})")
 
     return alpha
 
