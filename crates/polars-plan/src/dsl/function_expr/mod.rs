@@ -134,9 +134,8 @@ pub enum FunctionExpr {
         window_size: usize,
         bias: bool,
     },
-    ShiftAndFill {
-        periods: i64,
-    },
+    ShiftAndFill,
+    Shift,
     DropNans,
     DropNulls,
     #[cfg(feature = "mode")]
@@ -145,6 +144,9 @@ pub enum FunctionExpr {
     Skew(bool),
     #[cfg(feature = "moment")]
     Kurtosis(bool, bool),
+    Reshape(Vec<i64>),
+    #[cfg(feature = "repeat_by")]
+    RepeatBy,
     ArgUnique,
     #[cfg(feature = "rank")]
     Rank {
@@ -165,7 +167,6 @@ pub enum FunctionExpr {
     AsStruct,
     #[cfg(feature = "top_k")]
     TopK(bool),
-    Shift(i64),
     #[cfg(feature = "cum_agg")]
     Cumcount {
         reverse: bool,
@@ -345,7 +346,153 @@ impl Hash for FunctionExpr {
                 lib.hash(state);
                 symbol.hash(state);
             },
-            _ => {},
+            FunctionExpr::SumHorizontal
+            | FunctionExpr::MaxHorizontal
+            | FunctionExpr::MinHorizontal
+            | FunctionExpr::DropNans
+            | FunctionExpr::DropNulls
+            | FunctionExpr::Reverse
+            | FunctionExpr::ArgUnique
+            | FunctionExpr::Shift
+            | FunctionExpr::ShiftAndFill => {},
+            #[cfg(feature = "mode")]
+            FunctionExpr::Mode => {},
+            #[cfg(feature = "abs")]
+            FunctionExpr::Abs => {},
+            FunctionExpr::NullCount => {},
+            #[cfg(feature = "date_offset")]
+            FunctionExpr::DateOffset => {},
+            #[cfg(feature = "arg_where")]
+            FunctionExpr::ArgWhere => {},
+            #[cfg(feature = "trigonometry")]
+            FunctionExpr::Atan2 => {},
+            #[cfg(feature = "dtype-struct")]
+            FunctionExpr::AsStruct => {},
+            #[cfg(feature = "sign")]
+            FunctionExpr::Sign => {},
+            #[cfg(feature = "row_hash")]
+            FunctionExpr::Hash(a, b, c, d) => (a, b, c, d).hash(state),
+            FunctionExpr::FillNull { super_type } => super_type.hash(state),
+            #[cfg(all(feature = "rolling_window", feature = "moment"))]
+            FunctionExpr::RollingSkew { window_size, bias } => {
+                window_size.hash(state);
+                bias.hash(state);
+            },
+            #[cfg(feature = "moment")]
+            FunctionExpr::Skew(a) => a.hash(state),
+            #[cfg(feature = "moment")]
+            FunctionExpr::Kurtosis(a, b) => {
+                a.hash(state);
+                b.hash(state);
+            },
+            #[cfg(feature = "rank")]
+            FunctionExpr::Rank { options, seed } => {
+                options.hash(state);
+                seed.hash(state);
+            },
+            #[cfg(feature = "round_series")]
+            FunctionExpr::Clip { has_min, has_max } => {
+                has_min.hash(state);
+                has_max.hash(state);
+            },
+            #[cfg(feature = "top_k")]
+            FunctionExpr::TopK(a) => a.hash(state),
+            #[cfg(feature = "cum_agg")]
+            FunctionExpr::Cumcount { reverse } => reverse.hash(state),
+            #[cfg(feature = "cum_agg")]
+            FunctionExpr::Cumsum { reverse } => reverse.hash(state),
+            #[cfg(feature = "cum_agg")]
+            FunctionExpr::Cumprod { reverse } => reverse.hash(state),
+            #[cfg(feature = "cum_agg")]
+            FunctionExpr::Cummin { reverse } => reverse.hash(state),
+            #[cfg(feature = "cum_agg")]
+            FunctionExpr::Cummax { reverse } => reverse.hash(state),
+            #[cfg(feature = "dtype-struct")]
+            FunctionExpr::ValueCounts { sort, parallel } => {
+                sort.hash(state);
+                parallel.hash(state);
+            },
+            #[cfg(feature = "unique_counts")]
+            FunctionExpr::UniqueCounts => {},
+            #[cfg(feature = "approx_unique")]
+            FunctionExpr::ApproxNUnique => {},
+            FunctionExpr::Coalesce => {},
+            FunctionExpr::ShrinkType => {},
+            #[cfg(feature = "pct_change")]
+            FunctionExpr::PctChange => {},
+            #[cfg(feature = "log")]
+            FunctionExpr::Entropy { base, normalize } => {
+                base.to_bits().hash(state);
+                normalize.hash(state);
+            },
+            #[cfg(feature = "log")]
+            FunctionExpr::Log { base } => base.to_bits().hash(state),
+            #[cfg(feature = "log")]
+            FunctionExpr::Log1p => {},
+            #[cfg(feature = "log")]
+            FunctionExpr::Exp => {},
+            FunctionExpr::Unique(a) => a.hash(state),
+            #[cfg(feature = "round_series")]
+            FunctionExpr::Round { decimals } => decimals.hash(state),
+            #[cfg(feature = "round_series")]
+            FunctionExpr::Floor => {},
+            #[cfg(feature = "round_series")]
+            FunctionExpr::Ceil => {},
+            FunctionExpr::UpperBound => {},
+            FunctionExpr::LowerBound => {},
+            FunctionExpr::ConcatExpr(a) => a.hash(state),
+            #[cfg(feature = "peaks")]
+            FunctionExpr::PeakMin => {},
+            #[cfg(feature = "peaks")]
+            FunctionExpr::PeakMax => {},
+            #[cfg(feature = "cutqcut")]
+            FunctionExpr::Cut {
+                breaks,
+                labels,
+                left_closed,
+                include_breaks,
+            } => {
+                let slice = bytemuck::cast_slice::<_, u64>(breaks);
+                slice.hash(state);
+                labels.hash(state);
+                left_closed.hash(state);
+                include_breaks.hash(state);
+            },
+            FunctionExpr::Reshape(dims) => {
+                dims.hash(state);
+            },
+            #[cfg(feature = "repeat_by")]
+            FunctionExpr::RepeatBy => {},
+            #[cfg(feature = "cutqcut")]
+            FunctionExpr::QCut {
+                probs,
+                labels,
+                left_closed,
+                allow_duplicates,
+                include_breaks,
+            } => {
+                let slice = bytemuck::cast_slice::<_, u64>(probs);
+                slice.hash(state);
+                labels.hash(state);
+                left_closed.hash(state);
+                allow_duplicates.hash(state);
+                include_breaks.hash(state);
+            },
+            #[cfg(feature = "rle")]
+            FunctionExpr::RLE => {},
+            #[cfg(feature = "rle")]
+            FunctionExpr::RLEID => {},
+            FunctionExpr::ToPhysical => {},
+            FunctionExpr::SetSortedFlag(is_sorted) => is_sorted.hash(state),
+            FunctionExpr::BackwardFill { limit } | FunctionExpr::ForwardFill { limit } => {
+                limit.hash(state)
+            },
+            #[cfg(feature = "ewma")]
+            FunctionExpr::EwmMean { options } => options.hash(state),
+            #[cfg(feature = "ewma")]
+            FunctionExpr::EwmStd { options } => options.hash(state),
+            #[cfg(feature = "ewma")]
+            FunctionExpr::EwmVar { options } => options.hash(state),
         }
     }
 }
@@ -383,7 +530,7 @@ impl Display for FunctionExpr {
             FillNull { .. } => "fill_null",
             #[cfg(all(feature = "rolling_window", feature = "moment"))]
             RollingSkew { .. } => "rolling_skew",
-            ShiftAndFill { .. } => "shift_and_fill",
+            ShiftAndFill => "shift_and_fill",
             DropNans => "drop_nans",
             DropNulls => "drop_nulls",
             #[cfg(feature = "mode")]
@@ -415,7 +562,7 @@ impl Display for FunctionExpr {
                     "top_k"
                 }
             },
-            Shift(_) => "shift",
+            Shift => "shift",
             #[cfg(feature = "cum_agg")]
             Cumcount { .. } => "cumcount",
             #[cfg(feature = "cum_agg")]
@@ -481,6 +628,9 @@ impl Display for FunctionExpr {
             Cut { .. } => "cut",
             #[cfg(feature = "cutqcut")]
             QCut { .. } => "qcut",
+            Reshape(_) => "reshape",
+            #[cfg(feature = "repeat_by")]
+            RepeatBy => "repeat_by",
             #[cfg(feature = "rle")]
             RLE => "rle",
             #[cfg(feature = "rle")]
@@ -645,8 +795,8 @@ impl From<FunctionExpr> for SpecialEq<Arc<dyn SeriesUdf>> {
             RollingSkew { window_size, bias } => {
                 map!(rolling::rolling_skew, window_size, bias)
             },
-            ShiftAndFill { periods } => {
-                map_as_slice!(shift_and_fill::shift_and_fill, periods)
+            ShiftAndFill => {
+                map_as_slice!(shift_and_fill::shift_and_fill)
             },
             DropNans => map_owned!(nan::drop_nans),
             DropNulls => map!(dispatch::drop_nulls),
@@ -671,6 +821,19 @@ impl From<FunctionExpr> for SpecialEq<Arc<dyn SeriesUdf>> {
                     Contains => wrap!(list::contains),
                     #[cfg(feature = "list_drop_nulls")]
                     DropNulls => map!(list::drop_nulls),
+                    #[cfg(feature = "list_sample")]
+                    Sample {
+                        is_fraction,
+                        with_replacement,
+                        shuffle,
+                        seed,
+                    } => {
+                        if is_fraction {
+                            map_as_slice!(list::sample_fraction, with_replacement, shuffle, seed)
+                        } else {
+                            map_as_slice!(list::sample_n, with_replacement, shuffle, seed)
+                        }
+                    },
                     Slice => wrap!(list::slice),
                     Shift => map_as_slice!(list::shift),
                     Get => wrap!(list::get),
@@ -726,7 +889,7 @@ impl From<FunctionExpr> for SpecialEq<Arc<dyn SeriesUdf>> {
             TopK(descending) => {
                 map_as_slice!(top_k, descending)
             },
-            Shift(periods) => map!(dispatch::shift, periods),
+            Shift => map_as_slice!(shift_and_fill::shift),
             #[cfg(feature = "cum_agg")]
             Cumcount { reverse } => map!(cum::cumcount, reverse),
             #[cfg(feature = "cum_agg")]
@@ -782,6 +945,9 @@ impl From<FunctionExpr> for SpecialEq<Arc<dyn SeriesUdf>> {
             PeakMin => map!(peaks::peak_min),
             #[cfg(feature = "peaks")]
             PeakMax => map!(peaks::peak_max),
+            #[cfg(feature = "repeat_by")]
+            RepeatBy => map_as_slice!(dispatch::repeat_by),
+            Reshape(dims) => map!(dispatch::reshape, dims.clone()),
             #[cfg(feature = "cutqcut")]
             Cut {
                 breaks,
@@ -820,15 +986,17 @@ impl From<FunctionExpr> for SpecialEq<Arc<dyn SeriesUdf>> {
                 use RandomMethod::*;
                 match method {
                     Shuffle => map!(random::shuffle, seed),
-                    SampleFrac {
-                        frac,
+                    Sample {
+                        is_fraction,
                         with_replacement,
                         shuffle,
-                    } => map!(random::sample_frac, frac, with_replacement, shuffle, seed),
-                    SampleN {
-                        with_replacement,
-                        shuffle,
-                    } => map_as_slice!(random::sample_n, with_replacement, shuffle, seed),
+                    } => {
+                        if is_fraction {
+                            map_as_slice!(random::sample_frac, with_replacement, shuffle, seed)
+                        } else {
+                            map_as_slice!(random::sample_n, with_replacement, shuffle, seed)
+                        }
+                    },
                 }
             },
             SetSortedFlag(sorted) => map!(dispatch::set_sorted_flag, sorted),
@@ -884,17 +1052,17 @@ impl From<StringFunction> for SpecialEq<Arc<dyn SeriesUdf>> {
             },
             LenBytes => map!(strings::len_bytes),
             LenChars => map!(strings::len_chars),
-            #[cfg(feature = "string_justify")]
-            Zfill(alignment) => {
+            #[cfg(feature = "string_pad")]
+            PadEnd { length, fill_char } => {
+                map!(strings::pad_end, length, fill_char)
+            },
+            #[cfg(feature = "string_pad")]
+            PadStart { length, fill_char } => {
+                map!(strings::pad_start, length, fill_char)
+            },
+            #[cfg(feature = "string_pad")]
+            ZFill(alignment) => {
                 map!(strings::zfill, alignment)
-            },
-            #[cfg(feature = "string_justify")]
-            LJust { width, fillchar } => {
-                map!(strings::ljust, width, fillchar)
-            },
-            #[cfg(feature = "string_justify")]
-            RJust { width, fillchar } => {
-                map!(strings::rjust, width, fillchar)
             },
             #[cfg(feature = "temporal")]
             Strptime(dtype, options) => {

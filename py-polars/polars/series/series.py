@@ -90,6 +90,7 @@ from polars.utils.convert import (
     _time_to_pl_time,
 )
 from polars.utils.deprecation import (
+    deprecate_function,
     deprecate_nonkeyword_arguments,
     deprecate_renamed_function,
     deprecate_renamed_parameter,
@@ -481,14 +482,30 @@ class Series:
                 return self.clone()
             elif (other is False and op == "eq") or (other is True and op == "neq"):
                 return ~self
-
-        if isinstance(other, datetime) and self.dtype == Datetime:
-            time_zone = self.dtype.time_zone  # type: ignore[union-attr]
-            if str(other.tzinfo) != str(time_zone):
-                raise TypeError(
-                    f"Datetime time zone {other.tzinfo!r} does not match Series timezone {time_zone!r}"
+        elif isinstance(other, float) and self.dtype in INTEGER_DTYPES:
+            # require upcast when comparing int series to float value
+            self = self.cast(Float64)
+            f = get_ffi_func(op + "_<>", Float64, self._s)
+            assert f is not None
+            return self._from_pyseries(f(other))
+        elif isinstance(other, datetime):
+            if self.dtype == Date:
+                # require upcast when comparing date series to datetime
+                self = self.cast(Datetime("us"))
+                time_unit = "us"
+            elif self.dtype == Datetime:
+                # Use local time zone info
+                time_zone = self.dtype.time_zone  # type: ignore[union-attr]
+                if str(other.tzinfo) != str(time_zone):
+                    raise TypeError(
+                        f"Datetime time zone {other.tzinfo!r} does not match Series timezone {time_zone!r}"
+                    )
+                time_unit = self.dtype.time_unit  # type: ignore[union-attr]
+            else:
+                raise ValueError(
+                    f"cannot compare datetime.datetime to series of type {self.dtype}"
                 )
-            ts = _datetime_to_pl_timestamp(other, self.dtype.time_unit)  # type: ignore[union-attr]
+            ts = _datetime_to_pl_timestamp(other, time_unit)  # type: ignore[arg-type]
             f = get_ffi_func(op + "_<>", Int64, self._s)
             assert f is not None
             return self._from_pyseries(f(ts))
@@ -497,14 +514,13 @@ class Series:
             f = get_ffi_func(op + "_<>", Int64, self._s)
             assert f is not None
             return self._from_pyseries(f(d))
+        elif self.dtype == Categorical and not isinstance(other, Series):
+            other = Series([other])
         elif isinstance(other, date) and self.dtype == Date:
             d = _date_to_pl_date(other)
             f = get_ffi_func(op + "_<>", Int32, self._s)
             assert f is not None
             return self._from_pyseries(f(d))
-        elif self.dtype == Categorical and not isinstance(other, Series):
-            other = Series([other])
-
         if isinstance(other, Sequence) and not isinstance(other, str):
             other = Series("", other, dtype_if_empty=self.dtype)
         if isinstance(other, Series):
@@ -618,7 +634,7 @@ class Series:
 
     def eq_missing(self, other: Any) -> Self | Expr:
         """
-        Method equivalent of equality operator ``series == other`` where `None` == None`.
+        Method equivalent of equality operator ``series == other`` where ``None == None``.
 
         This differs from the standard ``ne`` where null values are propagated.
 
@@ -937,7 +953,7 @@ class Series:
         return self.implode().list.contains(item).item()
 
     def __iter__(self) -> Generator[Any, None, None]:
-        if self.dtype == List:
+        if self.dtype in (List, Array):
             # TODO: either make a change and return py-native list data here, or find
             #  a faster way to return nested/List series; sequential 'get_index' calls
             #  make this path a lot slower (~10x) than it needs to be.
@@ -5067,52 +5083,63 @@ class Series:
             self._s.apply_lambda(function, pl_return_dtype, skip_nulls)
         )
 
-    def shift(self, periods: int = 1) -> Series:
+    @deprecate_renamed_parameter("periods", "n", version="0.19.11")
+    def shift(self, n: int = 1, *, fill_value: IntoExpr | None = None) -> Series:
         """
-        Shift the values by a given period.
+        Shift values by the given number of indices.
+
+        Parameters
+        ----------
+        n
+            Number of indices to shift forward. If a negative value is passed, values
+            are shifted in the opposite direction instead.
+        fill_value
+            Fill the resulting null values with this value. Accepts expression input.
+            Non-expression inputs are parsed as literals.
+
+        Notes
+        -----
+        This method is similar to the ``LAG`` operation in SQL when the value for ``n``
+        is positive. With a negative value for ``n``, it is similar to ``LEAD``.
 
         Examples
         --------
-        >>> s = pl.Series("a", [1, 2, 3])
-        >>> s.shift(periods=1)
-        shape: (3,)
-        Series: 'a' [i64]
+        By default, values are shifted forward by one index.
+
+        >>> s = pl.Series([1, 2, 3, 4])
+        >>> s.shift()
+        shape: (4,)
+        Series: '' [i64]
         [
                 null
                 1
                 2
-        ]
-        >>> s.shift(periods=-1)
-        shape: (3,)
-        Series: 'a' [i64]
-        [
-                2
                 3
+        ]
+
+        Pass a negative value to shift in the opposite direction instead.
+
+        >>> s.shift(-2)
+        shape: (4,)
+        Series: '' [i64]
+        [
+                3
+                4
+                null
                 null
         ]
 
-        Parameters
-        ----------
-        periods
-            Number of places to shift (may be negative).
+        Specify ``fill_value`` to fill the resulting null values.
 
-        """
-
-    def shift_and_fill(
-        self,
-        fill_value: int | Expr,
-        *,
-        periods: int = 1,
-    ) -> Series:
-        """
-        Shift the values by a given period and fill the resulting null values.
-
-        Parameters
-        ----------
-        fill_value
-            Fill None values with the result of this expression.
-        periods
-            Number of places to shift (may be negative).
+        >>> s.shift(-2, fill_value=100)
+        shape: (4,)
+        Series: '' [i64]
+        [
+                3
+                4
+                100
+                100
+        ]
 
         """
 
@@ -5988,7 +6015,7 @@ class Series:
 
     def diff(self, n: int = 1, null_behavior: NullBehavior = "ignore") -> Series:
         """
-        Calculate the n-th discrete difference.
+        Calculate the first discrete difference between shifted items.
 
         Parameters
         ----------
@@ -6149,72 +6176,58 @@ class Series:
 
     def clip(
         self,
-        lower_bound: NumericLiteral | TemporalLiteral | IntoExprColumn,
-        upper_bound: NumericLiteral | TemporalLiteral | IntoExprColumn,
+        lower_bound: NumericLiteral | TemporalLiteral | IntoExprColumn | None = None,
+        upper_bound: NumericLiteral | TemporalLiteral | IntoExprColumn | None = None,
     ) -> Series:
         """
-        Clip (limit) the values in an array to a `min` and `max` boundary.
-
-        Only works for physical numerical types.
-
-        If you want to clip other dtypes, consider writing a "when, then, otherwise"
-        expression. See :func:`when` for more information.
+        Set values outside the given boundaries to the boundary value.
 
         Parameters
         ----------
         lower_bound
-            Minimum value.
+            Lower bound. Accepts expression input.
+            Non-expression inputs are parsed as literals.
+            If set to ``None`` (default), no lower bound is applied.
         upper_bound
-            Maximum value.
+            Upper bound. Accepts expression input.
+            Non-expression inputs are parsed as literals.
+            If set to ``None`` (default), no upper bound is applied.
+
+        See Also
+        --------
+        when
+
+        Notes
+        -----
+        This method only works for numeric and temporal columns. To clip other data
+        types, consider writing a `when-then-otherwise` expression. See :func:`when`.
 
         Examples
         --------
-        >>> s = pl.Series("foo", [-50, 5, None, 50])
+        Specifying both a lower and upper bound:
+
+        >>> s = pl.Series([-50, 5, 50, None])
         >>> s.clip(1, 10)
         shape: (4,)
-        Series: 'foo' [i64]
+        Series: '' [i64]
         [
-            1
-            5
-            null
-            10
+                1
+                5
+                10
+                null
         ]
 
-        """
+        Specifying only a single bound:
 
-    def clip_min(
-        self, lower_bound: NumericLiteral | TemporalLiteral | IntoExprColumn
-    ) -> Series:
-        """
-        Clip (limit) the values in an array to a `min` boundary.
-
-        Only works for physical numerical types.
-
-        If you want to clip other dtypes, consider writing a "when, then, otherwise"
-        expression. See :func:`when` for more information.
-
-        Parameters
-        ----------
-        lower_bound
-            Lower bound.
-
-        """
-
-    def clip_max(
-        self, upper_bound: NumericLiteral | TemporalLiteral | IntoExprColumn
-    ) -> Series:
-        """
-        Clip (limit) the values in an array to a `max` boundary.
-
-        Only works for physical numerical types.
-
-        If you want to clip other dtypes, consider writing a "when, then, otherwise"
-        expression. See :func:`when` for more information.
-
-        Parameters
-        ----------
-        upper_bound
-            Upper bound.
+        >>> s.clip(upper_bound=10)
+        shape: (4,)
+        Series: '' [i64]
+        [
+                -50
+                5
+                10
+                null
+        ]
 
         """
 
@@ -6828,6 +6841,63 @@ class Series:
         -------
         Series
             Series of data type :class:`Boolean`.
+
+        """
+
+    @deprecate_function("Use `clip` instead.", version="0.19.12")
+    def clip_min(
+        self, lower_bound: NumericLiteral | TemporalLiteral | IntoExprColumn
+    ) -> Series:
+        """
+        Clip (limit) the values in an array to a `min` boundary.
+
+        .. deprecated:: 0.19.12
+            Use :func:`clip` instead.
+
+        Parameters
+        ----------
+        lower_bound
+            Lower bound.
+
+        """
+
+    @deprecate_function("Use `clip` instead.", version="0.19.12")
+    def clip_max(
+        self, upper_bound: NumericLiteral | TemporalLiteral | IntoExprColumn
+    ) -> Series:
+        """
+        Clip (limit) the values in an array to a `max` boundary.
+
+        .. deprecated:: 0.19.12
+            Use :func:`clip` instead.
+
+        Parameters
+        ----------
+        upper_bound
+            Upper bound.
+
+        """
+
+    @deprecate_function("Use `shift` instead.", version="0.19.12")
+    @deprecate_renamed_parameter("periods", "n", version="0.19.11")
+    def shift_and_fill(
+        self,
+        fill_value: int | Expr,
+        *,
+        n: int = 1,
+    ) -> Series:
+        """
+        Shift values by the given number of places and fill the resulting null values.
+
+        .. deprecated:: 0.19.12
+            Use :func:`shift` instead.
+
+        Parameters
+        ----------
+        fill_value
+            Fill None values with the result of this expression.
+        n
+            Number of places to shift (may be negative).
 
         """
 

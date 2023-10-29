@@ -286,15 +286,21 @@ def test_bitwise_ops() -> None:
     # Note that the type annotations only allow Series to be passed in, but there is
     # specific code to deal with non-Series inputs.
     assert_series_equal(
-        (True & a),  # type: ignore[operator]
+        (
+            True & a  # type: ignore[operator]
+        ),
         pl.Series([True, False, True]),
     )
     assert_series_equal(
-        (True | a),  # type: ignore[operator]
+        (
+            True | a  # type: ignore[operator]
+        ),
         pl.Series([True, True, True]),
     )
     assert_series_equal(
-        (True ^ a),  # type: ignore[operator]
+        (
+            True ^ a  # type: ignore[operator]
+        ),
         pl.Series([False, True, False]),
     )
 
@@ -1080,14 +1086,6 @@ def test_map_elements() -> None:
     a.map_elements(lambda x: x)
 
 
-def test_shift() -> None:
-    a = pl.Series("a", [1, 2, 3])
-    assert_series_equal(a.shift(1), pl.Series("a", [None, 1, 2]))
-    assert_series_equal(a.shift(-1), pl.Series("a", [2, 3, None]))
-    assert_series_equal(a.shift(-2), pl.Series("a", [3, None, None]))
-    assert_series_equal(a.shift_and_fill(10, periods=-1), pl.Series("a", [2, 3, 10]))
-
-
 def test_object() -> None:
     vals = [[12], "foo", 9]
     a = pl.Series("a", vals)
@@ -1566,6 +1564,21 @@ def test_comparisons_int_series_to_float() -> None:
     assert_series_equal(srs_int >= 3.0, pl.Series([False, False, True, True]))
     assert_series_equal(srs_int == 3.0, pl.Series([False, False, True, False]))
     assert_series_equal(srs_int - True, pl.Series([0, 1, 2, 3]))
+
+
+def test_comparisons_int_series_to_float_scalar() -> None:
+    srs_int = pl.Series([1, 2, 3, 4])
+
+    assert_series_equal(srs_int < 1.5, pl.Series([True, False, False, False]))
+    assert_series_equal(srs_int > 1.5, pl.Series([False, True, True, True]))
+
+
+def test_comparisons_datetime_series_to_date_scalar() -> None:
+    srs_date = pl.Series([date(2023, 1, 1), date(2023, 1, 2), date(2023, 1, 3)])
+    dt = datetime(2023, 1, 1, 12, 0, 0)
+
+    assert_series_equal(srs_date < dt, pl.Series([True, False, False]))
+    assert_series_equal(srs_date > dt, pl.Series([False, True, True]))
 
 
 def test_comparisons_float_series_to_int() -> None:
@@ -2760,3 +2773,28 @@ def test_series_getitem_out_of_bounds_negative() -> None:
         IndexError, match="index -10 is out of bounds for sequence of length 2"
     ):
         s[-10]
+
+
+def test_series_cmp_fast_paths() -> None:
+    assert (
+        pl.Series([None], dtype=pl.Int32) != pl.Series([1, 2], dtype=pl.Int32)
+    ).to_list() == [None, None]
+    assert (
+        pl.Series([None], dtype=pl.Int32) == pl.Series([1, 2], dtype=pl.Int32)
+    ).to_list() == [None, None]
+
+    assert (
+        pl.Series([None], dtype=pl.Utf8) != pl.Series(["a", "b"], dtype=pl.Utf8)
+    ).to_list() == [None, None]
+    assert (
+        pl.Series([None], dtype=pl.Utf8) == pl.Series(["a", "b"], dtype=pl.Utf8)
+    ).to_list() == [None, None]
+
+    assert (
+        pl.Series([None], dtype=pl.Boolean)
+        != pl.Series([True, False], dtype=pl.Boolean)
+    ).to_list() == [None, None]
+    assert (
+        pl.Series([None], dtype=pl.Boolean)
+        == pl.Series([False, False], dtype=pl.Boolean)
+    ).to_list() == [None, None]

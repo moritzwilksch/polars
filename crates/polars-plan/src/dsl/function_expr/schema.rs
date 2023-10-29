@@ -45,7 +45,7 @@ impl FunctionExpr {
             FillNull { super_type, .. } => mapper.with_dtype(super_type.clone()),
             #[cfg(all(feature = "rolling_window", feature = "moment"))]
             RollingSkew { .. } => mapper.map_to_float_dtype(),
-            ShiftAndFill { .. } => mapper.with_same_dtype(),
+            ShiftAndFill => mapper.with_same_dtype(),
             DropNans => mapper.with_same_dtype(),
             DropNulls => mapper.with_same_dtype(),
             #[cfg(feature = "round_series")]
@@ -70,6 +70,8 @@ impl FunctionExpr {
                     Contains => mapper.with_dtype(DataType::Boolean),
                     #[cfg(feature = "list_drop_nulls")]
                     DropNulls => mapper.with_same_dtype(),
+                    #[cfg(feature = "list_sample")]
+                    Sample { .. } => mapper.with_same_dtype(),
                     Slice => mapper.with_same_dtype(),
                     Shift => mapper.with_same_dtype(),
                     Get => mapper.map_to_list_inner_dtype(),
@@ -131,7 +133,7 @@ impl FunctionExpr {
             }),
             #[cfg(feature = "unique_counts")]
             UniqueCounts => mapper.with_dtype(IDX_DTYPE),
-            Shift(..) | Reverse => mapper.with_same_dtype(),
+            Shift | Reverse => mapper.with_same_dtype(),
             Boolean(func) => func.get_field(mapper),
             #[cfg(feature = "dtype-categorical")]
             Categorical(func) => func.get_field(mapper),
@@ -225,6 +227,16 @@ impl FunctionExpr {
                 ]);
                 mapper.with_dtype(struct_dt)
             },
+            #[cfg(feature = "repeat_by")]
+            RepeatBy => mapper.map_dtype(|dt| DataType::List(dt.clone().into())),
+            Reshape(dims) => mapper.map_dtype(|dt| {
+                let dtype = dt.inner_dtype().unwrap_or(dt).clone();
+                if dims.len() == 1 {
+                    dtype
+                } else {
+                    DataType::List(Box::new(dtype))
+                }
+            }),
             #[cfg(feature = "cutqcut")]
             QCut {
                 include_breaks: false,

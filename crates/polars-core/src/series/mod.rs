@@ -181,6 +181,7 @@ impl Series {
 
     /// # Safety
     /// The caller must ensure the length and the data types of `ArrayRef` does not change.
+    /// And that the null_count is updated (e.g. with a `compute_len()`)
     pub unsafe fn chunks_mut(&mut self) -> &mut Vec<ArrayRef> {
         #[allow(unused_mut)]
         let mut ca = self._get_inner_mut();
@@ -252,6 +253,11 @@ impl Series {
     pub fn append(&mut self, other: &Series) -> PolarsResult<&mut Self> {
         self._get_inner_mut().append(other)?;
         Ok(self)
+    }
+
+    /// Redo a length and null_count compute
+    pub fn compute_len(&mut self) {
+        self._get_inner_mut().compute_len()
     }
 
     /// Extend the memory backed by this array with the values from `other`.
@@ -759,26 +765,6 @@ impl Series {
         }
     }
 
-    #[cfg(feature = "abs")]
-    /// convert numerical values to their absolute value
-    pub fn abs(&self) -> PolarsResult<Series> {
-        let a = self.to_physical_repr();
-        use DataType::*;
-        let out = match a.dtype() {
-            #[cfg(feature = "dtype-i8")]
-            Int8 => a.i8().unwrap().abs().into_series(),
-            #[cfg(feature = "dtype-i16")]
-            Int16 => a.i16().unwrap().abs().into_series(),
-            Int32 => a.i32().unwrap().abs().into_series(),
-            Int64 => a.i64().unwrap().abs().into_series(),
-            UInt8 | UInt16 | UInt32 | UInt64 => self.clone(),
-            Float32 => a.f32().unwrap().abs().into_series(),
-            Float64 => a.f64().unwrap().abs().into_series(),
-            dt => polars_bail!(opq = abs, dt),
-        };
-        out.cast(self.dtype())
-    }
-
     // used for formatting
     pub fn str_value(&self, index: usize) -> PolarsResult<Cow<str>> {
         let out = match self.0.get(index)? {
@@ -888,7 +874,8 @@ impl Series {
     /// Packs every element into a list.
     pub fn as_list(&self) -> ListChunked {
         let s = self.rechunk();
-        let values = s.to_arrow(0);
+        // don't  use `to_arrow` as we need the physical types
+        let values = s.chunks()[0].clone();
         let offsets = (0i64..(s.len() as i64 + 1)).collect::<Vec<_>>();
         let offsets = unsafe { Offsets::new_unchecked(offsets) };
 

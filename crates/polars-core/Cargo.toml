@@ -91,10 +91,8 @@ take_opt_iter = []
 group_by_list = []
 # rolling window functions
 rolling_window = []
-moment = []
 diagonal_concat = []
 horizontal_concat = []
-abs = []
 dataframe_arithmetic = []
 product = []
 unique_counts = []
@@ -118,8 +116,6 @@ dtype-u8 = []
 dtype-u16 = []
 dtype-categorical = []
 dtype-struct = []
-
-parquet = ["arrow/io_parquet"]
 
 # scale to terabytes?
 bigidx = ["arrow/bigidx", "polars-utils/bigidx"]
@@ -145,15 +141,12 @@ docs-selection = [
   "dot_product",
   "row_hash",
   "rolling_window",
-  "moment",
   "dtype-categorical",
   "dtype-decimal",
   "diagonal_concat",
   "horizontal_concat",
-  "abs",
   "dataframe_arithmetic",
   "product",
-  "unique_counts",
   "describe",
   "chunked_ids",
   "partition_by",
